@@ -30,15 +30,15 @@ class PriceTagPrinterModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("PriceTagPrinter")
 
-    AsyncFunction("getPermissionStatusAsync").SuspendBody {
+    AsyncFunction("getPermissionStatusAsync") {
       getPermissionStatus()
     }
 
-    AsyncFunction("requestPermissionsAsync").SuspendBody {
+    AsyncFunction("requestPermissionsAsync").SuspendBody<Map<String, Any>> {
       requestBluetoothPermissions()
     }
 
-    AsyncFunction("getPairedDevicesAsync").SuspendBody {
+    AsyncFunction("getPairedDevicesAsync").SuspendBody<List<Map<String, String>>> {
       withContext(Dispatchers.IO) {
         requireBluetoothPermission()
         pairedDevices()
@@ -57,7 +57,7 @@ class PriceTagPrinterModule : Module() {
       }
     }
 
-    AsyncFunction("disconnectAsync").SuspendBody {
+    AsyncFunction("disconnectAsync").SuspendBody<Unit> {
       withContext(Dispatchers.IO) {
         closeConnection()
       }
