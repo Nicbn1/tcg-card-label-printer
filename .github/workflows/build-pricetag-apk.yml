@@ -1,0 +1,67 @@
+name: Build PriceTag Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "artifacts/tcg-label-printer/**"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - ".github/workflows/build-pricetag-apk.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-apk:
+    name: Build installable Android APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android build packages
+        run: |
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          yes | sdkmanager --licenses >/dev/null || true
+
+      - name: Install JavaScript dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate native Android project
+        working-directory: artifacts/tcg-label-printer
+        run: pnpm exec expo prebuild --platform android --no-install
+
+      - name: Assemble release APK
+        working-directory: artifacts/tcg-label-printer/android
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :app:assembleRelease --no-daemon --stacktrace
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: pricetag-android-apk
+          path: artifacts/tcg-label-printer/android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+          retention-days: 14
