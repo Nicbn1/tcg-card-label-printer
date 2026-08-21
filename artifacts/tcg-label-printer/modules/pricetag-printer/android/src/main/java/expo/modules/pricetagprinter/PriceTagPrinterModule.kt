@@ -562,34 +562,36 @@ class PriceTagPrinterModule : Module() {
 
   private val gattCallback = object : BluetoothGattCallback() {
     override fun onConnectionStateChange(activeGatt: BluetoothGatt, status: Int, newState: Int) {
+      if (!isCurrentGatt(activeGatt)) return
       if (status != BluetoothGatt.GATT_SUCCESS) {
-        closeConnection(IOException("N12_CONNECTION_FAILED: The N12 disconnected during setup (status $status)."))
+        closeConnection(activeGatt, IOException("N12_CONNECTION_FAILED: The N12 disconnected during setup (status $status)."))
         return
       }
       if (newState == BluetoothProfile.STATE_CONNECTED) {
         if (!activeGatt.discoverServices()) {
-          closeConnection(IOException("N12_SERVICE_DISCOVERY_FAILED: Android could not inspect the N12 print service."))
+          closeConnection(activeGatt, IOException("N12_SERVICE_DISCOVERY_FAILED: Android could not inspect the N12 print service."))
         }
       } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-        closeConnection(IOException("N12_DISCONNECTED: The N12 disconnected. Wake it and reconnect before printing."))
+        closeConnection(activeGatt, IOException("N12_DISCONNECTED: The N12 disconnected. Wake it and reconnect before printing."))
       }
     }
 
     override fun onServicesDiscovered(activeGatt: BluetoothGatt, status: Int) {
+      if (!isCurrentGatt(activeGatt)) return
       if (status != BluetoothGatt.GATT_SUCCESS) {
-        closeConnection(IOException("N12_SERVICE_DISCOVERY_FAILED: Android could not inspect the N12 print service."))
+        closeConnection(activeGatt, IOException("N12_SERVICE_DISCOVERY_FAILED: Android could not inspect the N12 print service."))
         return
       }
       val service = activeGatt.getService(PRINTER_SERVICE_UUID)
       if (service == null) {
-        closeConnection(
+        closeConnection(activeGatt,
           IllegalStateException("N12_PROTOCOL_UNAVAILABLE: The selected device is not a compatible Zhuhai Jiuyin N12 printer.")
         )
         return
       }
       val output = service.getCharacteristic(WRITE_CHARACTERISTIC_UUID)
       if (output == null) {
-        closeConnection(
+        closeConnection(activeGatt,
           IllegalStateException("N12_PROTOCOL_UNAVAILABLE: The selected device is not a compatible Zhuhai Jiuyin N12 printer.")
         )
         return
@@ -600,7 +602,7 @@ class PriceTagPrinterModule : Module() {
       val supportsWriteWithoutResponse =
         output.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE != 0
       if (!supportsWrite && !supportsWriteWithoutResponse) {
-        closeConnection(
+        closeConnection(activeGatt,
           IllegalStateException("N12_PROTOCOL_UNAVAILABLE: The N12 print service does not allow label writes.")
         )
         return
@@ -640,6 +642,7 @@ class PriceTagPrinterModule : Module() {
       descriptor: BluetoothGattDescriptor,
       status: Int
     ) {
+      if (!isCurrentGatt(activeGatt)) return
       if (descriptor.characteristic.uuid != FLOW_CONTROL_CHARACTERISTIC_UUID) return
       synchronized(stateLock) {
         awaitingFlowDescriptor = false
@@ -650,12 +653,13 @@ class PriceTagPrinterModule : Module() {
     }
 
     override fun onMtuChanged(activeGatt: BluetoothGatt, mtu: Int, status: Int) {
+      if (!isCurrentGatt(activeGatt)) return
       if (status == BluetoothGatt.GATT_SUCCESS) {
         synchronized(stateLock) {
           maxPacketBytes = (mtu - 3).coerceIn(20, MAX_PACKET_BYTES)
         }
       }
-      completeConnection()
+      completeConnection(activeGatt)
     }
 
     override fun onCharacteristicChanged(
@@ -663,6 +667,7 @@ class PriceTagPrinterModule : Module() {
       characteristic: BluetoothGattCharacteristic,
       value: ByteArray
     ) {
+      if (!isCurrentGatt(activeGatt)) return
       if (characteristic.uuid != FLOW_CONTROL_CHARACTERISTIC_UUID || value.size < 2 || value[0] != 0x01.toByte()) {
         return
       }
@@ -690,6 +695,7 @@ class PriceTagPrinterModule : Module() {
       characteristic: BluetoothGattCharacteristic,
       status: Int
     ) {
+      if (!isCurrentGatt(activeGatt)) return
       val continuation = synchronized(stateLock) {
         writeContinuation.also { writeContinuation = null }
       }
@@ -706,7 +712,11 @@ class PriceTagPrinterModule : Module() {
     }
   }
 
-  private fun completeConnection() {
+  private fun isCurrentGatt(candidate: BluetoothGatt): Boolean =
+    synchronized(stateLock) { gatt === candidate }
+
+  private fun completeConnection(activeGatt: BluetoothGatt) {
+    if (!isCurrentGatt(activeGatt)) return
     val continuation = synchronized(stateLock) {
       connectionContinuation.also { connectionContinuation = null }
     }
@@ -718,16 +728,21 @@ class PriceTagPrinterModule : Module() {
 
   private fun requestMtuOrComplete(activeGatt: BluetoothGatt) {
     if (!activeGatt.requestMtu(REQUESTED_MTU)) {
-      completeConnection()
+      completeConnection(activeGatt)
     }
   }
 
   private fun closeConnection(reason: Throwable? = null) {
+    closeConnection(expectedGatt = null, reason = reason)
+  }
+
+  private fun closeConnection(expectedGatt: BluetoothGatt?, reason: Throwable?) {
     val toFailConnection: CancellableContinuation<Map<String, String>>?
     val toFailWrite: CancellableContinuation<Unit>?
     val toFailCredit: CancellableContinuation<Unit>?
     val activeGatt: BluetoothGatt?
     synchronized(stateLock) {
+      if (expectedGatt != null && gatt !== expectedGatt) return
       toFailConnection = connectionContinuation
       toFailWrite = writeContinuation
       toFailCredit = creditContinuation
