@@ -8,7 +8,6 @@ import android.bluetooth.BluetoothSocket
 import android.os.Build
 import android.util.Base64
 import expo.modules.interfaces.permissions.PermissionsResponseListener
-import expo.modules.kotlin.functions.Coroutine
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import kotlinx.coroutines.Dispatchers
@@ -31,34 +30,34 @@ class PriceTagPrinterModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("PriceTagPrinter")
 
-    AsyncFunction("getPermissionStatusAsync") Coroutine {
+    AsyncFunction("getPermissionStatusAsync").SuspendBody {
       getPermissionStatus()
     }
 
-    AsyncFunction("requestPermissionsAsync") Coroutine {
+    AsyncFunction("requestPermissionsAsync").SuspendBody {
       requestBluetoothPermissions()
     }
 
-    AsyncFunction("getPairedDevicesAsync") Coroutine {
+    AsyncFunction("getPairedDevicesAsync").SuspendBody {
       withContext(Dispatchers.IO) {
         requireBluetoothPermission()
         pairedDevices()
       }
     }
 
-    AsyncFunction("connectAsync") Coroutine { address: String ->
+    AsyncFunction("connectAsync").SuspendBody { address: String ->
       withContext(Dispatchers.IO) {
         connect(address)
       }
     }
 
-    AsyncFunction("writeBase64Async") Coroutine { base64Data: String ->
+    AsyncFunction("writeBase64Async").SuspendBody { base64Data: String ->
       withContext(Dispatchers.IO) {
         write(base64Data)
       }
     }
 
-    AsyncFunction("disconnectAsync") Coroutine {
+    AsyncFunction("disconnectAsync").SuspendBody {
       withContext(Dispatchers.IO) {
         closeConnection()
       }
