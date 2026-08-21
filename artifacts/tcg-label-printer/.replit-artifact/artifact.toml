@@ -1,0 +1,24 @@
+kind = "mobile"
+previewPath = "/"
+title = "TCG Label Printer"
+description = "An Android app for TCG card collectors. Searches PriceCharting for card prices, then prints labels (card name, series, value) to a Bluetooth ESC/POS thermal printer. Designed to be fast, cheap to run, and work with common sub-$30 Bluetooth thermal label printers."
+version = "1.0.0"
+id = "artifacts/tcg-label-printer"
+router = "expo-domain"
+
+[[services]]
+name = "expo"
+ensurePreviewReachable = "/status"
+paths = [ "/" ]
+localPort = 25828
+
+[services.development]
+run = "pnpm --filter @workspace/tcg-label-printer run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/tcg-label-printer", "run", "build" ]
+run = [ "pnpm", "--filter", "@workspace/tcg-label-printer", "run", "serve" ]
+
+[services.env]
+PORT = "25828"
+BASE_PATH = "/"
