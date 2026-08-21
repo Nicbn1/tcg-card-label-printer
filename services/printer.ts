@@ -119,3 +119,5 @@ export async function sendToPrinter(
   await device.disconnect();
   */
 }
+
+// Release source synchronized with artifacts/tcg-label-printer.
