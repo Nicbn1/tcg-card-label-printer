@@ -2,11 +2,7 @@
 // pricecharting.com server-side). The direct pricecharting.com API requires
 // an auth token that we don't have.
 import { cacheSearchResults, getCachedSearch } from '@/services/cardCache';
-
-const API_BASE =
-  process.env.EXPO_PUBLIC_DOMAIN
-    ? `https://${process.env.EXPO_PUBLIC_DOMAIN}/api`
-    : '/api';
+import { API_BASE } from '@/services/apiBase';
 
 export interface CardProduct {
   id: number;

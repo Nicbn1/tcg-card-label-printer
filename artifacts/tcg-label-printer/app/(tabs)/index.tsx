@@ -21,11 +21,7 @@ import { type CardProduct, searchCardsWithCache } from '@/services/pricecharting
 import { CardResultItem } from '@/components/CardResultItem';
 import { useBatchQueue } from '@/context/BatchQueueContext';
 import { useOfflineBooth } from '@/context/OfflineBoothContext';
-
-const API_BASE =
-  process.env.EXPO_PUBLIC_DOMAIN
-    ? `https://${process.env.EXPO_PUBLIC_DOMAIN}/api`
-    : '/api';
+import { API_BASE } from '@/services/apiBase';
 
 interface IdentificationCandidate {
   cardName: string;

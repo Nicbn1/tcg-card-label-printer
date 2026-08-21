@@ -10,10 +10,7 @@ import React, {
 } from 'react';
 import { cacheSearchResults } from '@/services/cardCache';
 import { searchCardsLive } from '@/services/pricecharting';
-
-const API_BASE = process.env.EXPO_PUBLIC_DOMAIN
-  ? `https://${process.env.EXPO_PUBLIC_DOMAIN}/api`
-  : '/api';
+import { API_BASE } from '@/services/apiBase';
 const QUEUE_KEY = '@pricetag_offline_operations_v1';
 const MAX_PENDING_OPERATIONS = 6;
 
