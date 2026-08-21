@@ -46,8 +46,8 @@ export function PrinterSetupCard() {
       setDevices(nearbyDevices);
       setMessage(
         nearbyDevices.length
-          ? 'Choose your N12 from the nearby Bluetooth devices.'
-          : 'No nearby Bluetooth devices found. Turn on the N12, then scan again.',
+          ? 'Choose your N12 from the paired or nearby Bluetooth devices.'
+          : 'No paired or nearby Bluetooth devices found. Turn on the N12, then scan again.',
       );
     } catch (error: unknown) {
       setMessage(error instanceof Error ? error.message : 'Could not find nearby Bluetooth printers.');
@@ -111,7 +111,7 @@ export function PrinterSetupCard() {
           <Text style={[styles.body, { color: colors.mutedForeground, fontFamily: 'Inter_400Regular' }]}>
             {savedAddress
               ? `Selected printer: ${savedAddress}`
-              : 'Turn on the N12, then find it below.'}
+              : 'Turn on or pair the N12, then find it below.'}
           </Text>
 
           <View style={styles.actions}>
