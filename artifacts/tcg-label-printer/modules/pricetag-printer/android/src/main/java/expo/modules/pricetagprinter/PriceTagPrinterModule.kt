@@ -31,34 +31,34 @@ class PriceTagPrinterModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("PriceTagPrinter")
 
-    AsyncFunction("getPermissionStatusAsync") Coroutine<Map<String, Any>> {
+    AsyncFunction("getPermissionStatusAsync") Coroutine { ->
       getPermissionStatus()
     }
 
-    AsyncFunction("requestPermissionsAsync") Coroutine<Map<String, Any>> {
+    AsyncFunction("requestPermissionsAsync") Coroutine { ->
       requestBluetoothPermissions()
     }
 
-    AsyncFunction("getPairedDevicesAsync") Coroutine<List<Map<String, String>>> {
+    AsyncFunction("getPairedDevicesAsync") Coroutine { ->
       withContext(Dispatchers.IO) {
         requireBluetoothPermission()
         pairedDevices()
       }
     }
 
-    AsyncFunction("connectAsync") Coroutine<Map<String, String>> { address: String ->
+    AsyncFunction("connectAsync") Coroutine { address: String ->
       withContext(Dispatchers.IO) {
         connect(address)
       }
     }
 
-    AsyncFunction("writeBase64Async") Coroutine<Unit> { base64Data: String ->
+    AsyncFunction("writeBase64Async") Coroutine { base64Data: String ->
       withContext(Dispatchers.IO) {
         write(base64Data)
       }
     }
 
-    AsyncFunction("disconnectAsync") Coroutine<Unit> {
+    AsyncFunction("disconnectAsync") Coroutine { ->
       withContext(Dispatchers.IO) {
         closeConnection()
       }
