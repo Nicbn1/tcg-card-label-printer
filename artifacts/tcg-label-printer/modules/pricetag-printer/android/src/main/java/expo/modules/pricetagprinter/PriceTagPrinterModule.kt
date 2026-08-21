@@ -29,6 +29,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.ByteArrayOutputStream
 import java.io.IOException
+import java.util.Collections
 import java.util.UUID
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -167,9 +168,16 @@ class PriceTagPrinterModule : Module() {
 
   @SuppressLint("MissingPermission")
   private suspend fun scanForDevices(): List<Map<String, String>> {
-    val scanner = bluetoothAdapter().bluetoothLeScanner
+    val adapter = bluetoothAdapter()
+    val scanner = adapter.bluetoothLeScanner
       ?: throw IllegalStateException("BLE_UNAVAILABLE: This Android device cannot scan for the N12.")
-    val devices = linkedMapOf<String, Map<String, String>>()
+    val devices = Collections.synchronizedMap(linkedMapOf<String, Map<String, String>>())
+
+    // Some N12 firmware stops advertising while it is paired. Including bonded
+    // devices lets a user reconnect without first removing the pairing in Android.
+    adapter.bondedDevices.forEach { device ->
+      devices[device.address] = deviceToMap(device)
+    }
 
     return suspendCancellableCoroutine { continuation ->
       val callback = object : ScanCallback() {
@@ -206,11 +214,14 @@ class PriceTagPrinterModule : Module() {
           // Permission failures are reported before a scan begins.
         }
         if (continuation.isActive) {
-          val discovered = devices.values.sortedWith(
-            compareByDescending<Map<String, String>> { device ->
-              device["name"]?.contains("n12", ignoreCase = true) == true
-            }.thenBy { device -> device["name"]?.lowercase() ?: "" }
-          )
+          val discovered = synchronized(devices) {
+            devices.values
+              .sortedWith(
+                compareByDescending<Map<String, String>> { device ->
+                  device["name"]?.contains("n12", ignoreCase = true) == true
+                }.thenBy { device -> device["name"]?.lowercase() ?: "" }
+              )
+          }
           continuation.resume(discovered)
         }
       }
@@ -240,6 +251,9 @@ class PriceTagPrinterModule : Module() {
       throw IllegalArgumentException("PRINTER_ADDRESS_REQUIRED: Choose your nearby N12 in Settings before printing.")
     }
     synchronized(stateLock) {
+      if (connectionContinuation != null) {
+        throw IllegalStateException("N12_CONNECTION_IN_PROGRESS: Wait for the current N12 connection attempt to finish.")
+      }
       if (gatt != null && writeCharacteristic != null && connectedAddress == normalizedAddress) {
         return mapOf("name" to "N12 label printer", "address" to normalizedAddress)
       }
@@ -252,7 +266,13 @@ class PriceTagPrinterModule : Module() {
       throw IllegalArgumentException("N12_ADDRESS_INVALID: Select the N12 from the nearby-printer list.", error)
     }
 
+    val hadPreviousConnection = synchronized(stateLock) { gatt != null }
     closeConnection()
+    if (hadPreviousConnection) {
+      // A short gap after closing a stale GATT prevents common Android 133
+      // reconnect failures on printers that do not release the radio instantly.
+      delay(GATT_RECONNECT_DELAY_MS)
+    }
     val connection = withTimeoutOrNull(CONNECTION_TIMEOUT_MS) {
       suspendCancellableCoroutine { continuation ->
       synchronized(stateLock) {
@@ -530,13 +550,46 @@ class PriceTagPrinterModule : Module() {
       }
     characteristic.value = packet
 
+    if (writeWithoutResponse) {
+      // Android does not reliably invoke onCharacteristicWrite for
+      // WRITE_TYPE_NO_RESPONSE. The paced send loop is the acknowledgement
+      // mechanism in this mode, so waiting for that callback causes false
+      // connection/printing timeouts.
+      val queued = try {
+        @Suppress("DEPRECATION")
+        activeGatt.writeCharacteristic(characteristic)
+      } catch (error: SecurityException) {
+        throw IllegalStateException(
+          "BLUETOOTH_PERMISSION_REQUIRED: Allow Nearby devices access to keep printing to the N12.",
+          error
+        )
+      }
+      if (!queued) {
+        throw IOException("N12_WRITE_FAILED: The printer did not accept a label packet. Keep it powered on and try again.")
+      }
+      return
+    }
+
     val writeCompleted = withTimeoutOrNull(PACKET_WRITE_TIMEOUT_MS) {
       suspendCancellableCoroutine<Unit> { continuation ->
       synchronized(stateLock) {
         writeContinuation = continuation
       }
-      @Suppress("DEPRECATION")
-      val queued = activeGatt.writeCharacteristic(characteristic)
+       val queued = try {
+         @Suppress("DEPRECATION")
+         activeGatt.writeCharacteristic(characteristic)
+       } catch (error: SecurityException) {
+         synchronized(stateLock) {
+           if (writeContinuation === continuation) writeContinuation = null
+         }
+         continuation.resumeWithException(
+           IllegalStateException(
+             "BLUETOOTH_PERMISSION_REQUIRED: Allow Nearby devices access to keep printing to the N12.",
+             error
+           )
+         )
+         return@suspendCancellableCoroutine
+       }
       if (!queued) {
         synchronized(stateLock) {
           if (writeContinuation === continuation) writeContinuation = null
@@ -727,9 +780,15 @@ class PriceTagPrinterModule : Module() {
   }
 
   private fun requestMtuOrComplete(activeGatt: BluetoothGatt) {
-    if (!activeGatt.requestMtu(REQUESTED_MTU)) {
-      completeConnection(activeGatt)
+    // MTU negotiation is an optimization only. Several inexpensive BLE
+    // printers never send onMtuChanged even after accepting the request, which
+    // previously made an otherwise usable connection time out after 12 seconds.
+    try {
+      activeGatt.requestMtu(REQUESTED_MTU)
+    } catch (_: SecurityException) {
+      // The connection can still use the safe 20-byte default packets.
     }
+    completeConnection(activeGatt)
   }
 
   private fun closeConnection(reason: Throwable? = null) {
@@ -783,6 +842,7 @@ class PriceTagPrinterModule : Module() {
     private const val CONNECTION_TIMEOUT_MS = 12_000L
     private const val PACKET_WRITE_TIMEOUT_MS = 3_000L
     private const val PACKET_DELAY_MS = 3L
+    private const val GATT_RECONNECT_DELAY_MS = 250L
     private const val REQUESTED_MTU = 247
     private const val DEFAULT_PACKET_BYTES = 20
     private const val MAX_PACKET_BYTES = 200
