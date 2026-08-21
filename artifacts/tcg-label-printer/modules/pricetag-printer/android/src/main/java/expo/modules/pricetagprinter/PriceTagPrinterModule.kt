@@ -530,14 +530,6 @@ class PriceTagPrinterModule : Module() {
       }
     characteristic.value = packet
 
-    if (writeWithoutResponse) {
-      @Suppress("DEPRECATION")
-      if (!activeGatt.writeCharacteristic(characteristic)) {
-        throw IOException("N12_WRITE_FAILED: The N12 did not accept a label packet. Keep it powered on and try again.")
-      }
-      return
-    }
-
     val writeCompleted = withTimeoutOrNull(PACKET_WRITE_TIMEOUT_MS) {
       suspendCancellableCoroutine<Unit> { continuation ->
       synchronized(stateLock) {
