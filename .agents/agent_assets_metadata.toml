@@ -1,0 +1,30 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "MLSHnGL8XQjf2-gDPSzqH"
+uri = "file://artifacts/tcg-label-printer/builds/PriceTag-N12-release.apk"
+type = "unspecified"
+title = "PriceTag N12 Android APK"
+description = "Release APK with N12 BLE bitmap printing. Size: 97,143,488 bytes. SHA-256: 5bab849d40eda79c0c7da8cb88da005881f55aac6d24bc106dd2ee9b064f2552"
+logical_id = "1570690f-e104-4587-bdf5-c620e1dbce96"
+content_hash = "sha256:5bab849d40eda79c0c7da8cb88da005881f55aac6d24bc106dd2ee9b064f2552"
+size = 97143488
+mtime_ms = 1787284318268
+storage_uri = "gcs://replit-rams-assets-riker/rams/assets/repl:c26c3029-5473-4220-8128-030e4f847ce5/1570690f-e104-4587-bdf5-c620e1dbce96/77247e88-02a0-437e-ac81-00df63a1838e"
+storage_version_token = "1787285195561745"
+content_type = "application/octet-stream"
+
+[[outputs]]
+id = "RYyfzrVohPMF7oLnLBMSr"
+uri = "file://.cache/pricetag-apk-build/artifacts/tcg-label-printer/android/app/build/outputs/apk/debug/app-debug.apk"
+type = "unspecified"
+title = "PriceTag N12 two-phase print test APK"
+description = "Arm64 debug build with callback-independent pairing, staged raster dispatch, no automatic post-print disconnect, and a persistent on-screen BLE delivery report."
+logical_id = "07153d70-1e7b-47a6-bf7e-ef425d58b271"
+content_hash = "sha256:1e2c013f77deca5f670e0a3b5501b464198cb51d779d65af47451088864b5841"
+size = 65032330
+mtime_ms = 1787415587215
+storage_uri = "gcs://replit-rams-assets-riker/rams/assets/repl:c26c3029-5473-4220-8128-030e4f847ce5/07153d70-1e7b-47a6-bf7e-ef425d58b271/3cc458c6-e602-4708-b39a-bd38f88836af"
+storage_version_token = "1787415736270691"
+content_type = "application/octet-stream"

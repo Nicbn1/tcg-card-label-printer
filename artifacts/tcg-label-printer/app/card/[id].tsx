@@ -47,6 +47,7 @@ export default function CardDetailScreen() {
 
   const [printing, setPrinting] = useState(false);
   const [printed, setPrinted] = useState(false);
+  const [printReport, setPrintReport] = useState<string | null>(null);
 
   const looseCents   = parseInt(params.loose    ?? '0', 10);
   const cibCents     = parseInt(params.cib      ?? '0', 10);
@@ -103,16 +104,32 @@ export default function CardDetailScreen() {
         await addHistoryEntry({ ...label });
 
       // Attempt Bluetooth send (throws in Expo Go; works in native APK build)
-      await sendToPrinter('', label);
+      const delivery = await sendToPrinter('', label);
 
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setPrinted(true);
+      const deliveryDetail =
+        delivery.writeMode === 'acknowledged'
+          ? `${delivery.acknowledgedPacketCount}/${delivery.packetCount} BLE packets acknowledged`
+          : `${delivery.packetCount} packets queued without peripheral acknowledgement`;
+      const report = `${deliveryDetail}; ${delivery.packetBytes}-byte packets; ${
+        delivery.usedFlowControl ? 'FF03 buffer credits used' : 'paced fallback used'
+      }.`;
+      setPrintReport(`BLE delivery confirmed: ${report} Physical printing still depends on printer acceptance.`);
+      Alert.alert(
+        'Label sent to N12',
+        `${deliveryDetail}\nPayload size: up to ${delivery.packetBytes} bytes per BLE write${
+          delivery.usedFlowControl ? '\nFF03 buffer credits used.' : '\nNo FF03 credits received; paced fallback used.'
+        }\n\nBLE acknowledgement confirms transport delivery, not that the printer rendered the label.`,
+        [{ text: 'OK' }],
+      );
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       const isExpoGo = msg.includes('EXPO_GO_ONLY');
 
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
       setPrinted(true); // mark saved
+      setPrintReport(`Print error: ${isExpoGo ? 'Bluetooth printing requires an Android APK.' : msg}`);
 
       Alert.alert(
         isExpoGo ? 'Saved to History' : 'Print Error',
@@ -384,6 +401,23 @@ export default function CardDetailScreen() {
             </>
           )}
         </TouchableOpacity>
+        {printReport && (
+          <View
+            style={[
+              styles.printReport,
+              { backgroundColor: colors.accent, borderColor: colors.border },
+            ]}
+          >
+            <Text
+              style={[
+                styles.printReportText,
+                { color: colors.foreground, fontFamily: 'Inter_400Regular' },
+              ]}
+            >
+              {printReport}
+            </Text>
+          </View>
+        )}
       </ScrollView>
     </View>
   );
@@ -455,4 +489,13 @@ const styles = StyleSheet.create({
     marginTop: 6,
   },
   printBtnText: { fontSize: 17 },
+  printReport: {
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 12,
+  },
+  printReportText: {
+    fontSize: 13,
+    lineHeight: 19,
+  },
 });

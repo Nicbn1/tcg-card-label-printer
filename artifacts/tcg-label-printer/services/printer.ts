@@ -18,6 +18,7 @@ import {
 } from '@/services/labelPresets';
 import PriceTagPrinter, {
   type NativePrinterConnection,
+  type NativePrinterDelivery,
   type NativePrinterDevice,
   type PrinterPermissionStatus,
 } from '@/modules/pricetag-printer';
@@ -108,6 +109,7 @@ export function getPrintableLines(label: LabelData): string[] {
 export type PrinterDevice = NativePrinterDevice;
 export type PrinterConnection = NativePrinterConnection;
 export type BluetoothPermissionStatus = PrinterPermissionStatus;
+export type PrinterDelivery = NativePrinterDelivery;
 
 function nativePrinter() {
   if (!PriceTagPrinter) {
@@ -170,7 +172,7 @@ export async function getPrinterConnection(): Promise<PrinterConnection> {
 export async function sendToPrinter(
   deviceAddress: string,
   label: LabelData,
-): Promise<void> {
+): Promise<PrinterDelivery> {
   const printer = nativePrinter();
   const targetAddress = deviceAddress.trim() || (await getSavedPrinterAddress());
   if (!targetAddress) {
@@ -178,9 +180,8 @@ export async function sendToPrinter(
   }
 
   await printer.connectAsync(targetAddress);
-  try {
-    await printer.printLabelAsync({ lines: getPrintableLines(label) });
-  } finally {
-    await printer.disconnectAsync().catch(() => undefined);
-  }
+  // The N12 may still be decompressing and feeding a raster after its footer
+  // reaches FF02. Keep this session alive; Forget/disconnect remains the
+  // explicit way to release the selected printer.
+  return printer.printLabelAsync({ lines: getPrintableLines(label) });
 }

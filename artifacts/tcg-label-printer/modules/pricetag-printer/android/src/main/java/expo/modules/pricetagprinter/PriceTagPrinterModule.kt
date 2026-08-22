@@ -25,6 +25,7 @@ import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.ByteArrayOutputStream
@@ -44,18 +45,26 @@ import kotlin.coroutines.resumeWithException
 class PriceTagPrinterModule : Module() {
   private val mainHandler = Handler(Looper.getMainLooper())
   private val stateLock = Any()
+  private val printMutex = Mutex()
 
   private var gatt: BluetoothGatt? = null
   private var writeCharacteristic: BluetoothGattCharacteristic? = null
+  private var flowCharacteristic: BluetoothGattCharacteristic? = null
   private var connectedAddress: String? = null
-  private var maxPacketBytes = DEFAULT_PACKET_BYTES
   private var writesWithoutResponse = false
-  private var awaitingFlowDescriptor = false
   private var flowControlEnabled = false
-  private var availableCredits = FALLBACK_CREDITS
+  private var flowControlSetupPending = false
+  private var flowControlSetupExpired = false
+  private var firstFlowCreditPending = false
+  private var availableFlowCredits = FALLBACK_FLOW_CREDITS
+  private var connectionAttemptId = 0L
+  private var reservedConnectionAttemptId: Long? = null
+  private var pendingConnectionAttemptId: Long? = null
   private var connectionContinuation: CancellableContinuation<Map<String, String>>? = null
   private var writeContinuation: CancellableContinuation<Unit>? = null
-  private var creditContinuation: CancellableContinuation<Unit>? = null
+  private var flowCreditContinuation: CancellableContinuation<Unit>? = null
+  private var writeAttemptId = 0L
+  private var pendingWriteAttemptId: Long? = null
 
   override fun definition() = ModuleDefinition {
     Name("PriceTagPrinter")
@@ -88,7 +97,9 @@ class PriceTagPrinterModule : Module() {
 
     AsyncFunction("disconnectAsync").SuspendBody<Unit> {
       withContext(Dispatchers.IO) {
-        closeConnection()
+        closeConnection(
+          IOException("N12_CONNECTION_CANCELLED: The N12 connection was cancelled before it finished.")
+        )
       }
     }
 
@@ -250,37 +261,62 @@ class PriceTagPrinterModule : Module() {
     if (normalizedAddress.isBlank()) {
       throw IllegalArgumentException("PRINTER_ADDRESS_REQUIRED: Choose your nearby N12 in Settings before printing.")
     }
-    synchronized(stateLock) {
-      if (connectionContinuation != null) {
+    val connectionAttempt = synchronized(stateLock) {
+      if (reservedConnectionAttemptId != null || connectionContinuation != null) {
         throw IllegalStateException("N12_CONNECTION_IN_PROGRESS: Wait for the current N12 connection attempt to finish.")
       }
       if (gatt != null && writeCharacteristic != null && connectedAddress == normalizedAddress) {
         return mapOf("name" to "N12 label printer", "address" to normalizedAddress)
       }
+      connectionAttemptId += 1
+      reservedConnectionAttemptId = connectionAttemptId
+      Pair(connectionAttemptId, gatt != null)
     }
 
-    val adapter = bluetoothAdapter()
+    val adapter = try {
+      bluetoothAdapter()
+    } catch (error: Throwable) {
+      releaseConnectionReservation(connectionAttempt.first)
+      throw error
+    }
     val device = try {
       adapter.getRemoteDevice(normalizedAddress)
     } catch (error: IllegalArgumentException) {
+      releaseConnectionReservation(connectionAttempt.first)
       throw IllegalArgumentException("N12_ADDRESS_INVALID: Select the N12 from the nearby-printer list.", error)
     }
 
-    val hadPreviousConnection = synchronized(stateLock) { gatt != null }
-    closeConnection()
-    if (hadPreviousConnection) {
+    if (connectionAttempt.second) {
       // A short gap after closing a stale GATT prevents common Android 133
       // reconnect failures on printers that do not release the radio instantly.
+      closeConnection(
+        IOException("N12_CONNECTION_REPLACED: The previous N12 connection was closed to start a new one."),
+        preserveConnectionReservation = true
+      )
       delay(GATT_RECONNECT_DELAY_MS)
     }
     val connection = withTimeoutOrNull(CONNECTION_TIMEOUT_MS) {
       suspendCancellableCoroutine { continuation ->
-      synchronized(stateLock) {
-        connectionContinuation = continuation
+      val attemptId = connectionAttempt.first
+      val registered = synchronized(stateLock) {
+        if (reservedConnectionAttemptId != attemptId) {
+          false
+        } else {
+          pendingConnectionAttemptId = attemptId
+          connectionContinuation = continuation
+          connectedAddress = normalizedAddress
+          true
+        }
+      }
+      if (!registered) {
+        continuation.resumeWithException(
+          IOException("N12_CONNECTION_CANCELLED: The N12 connection attempt was cancelled.")
+        )
+        return@suspendCancellableCoroutine
       }
       val context = appContext.reactContext?.applicationContext
         ?: run {
-          synchronized(stateLock) { connectionContinuation = null }
+          clearConnectionAttempt(continuation, attemptId)
           continuation.resumeWithException(
             IllegalStateException("N12_CONNECTION_UNAVAILABLE: Android could not create a Bluetooth connection.")
           )
@@ -289,12 +325,12 @@ class PriceTagPrinterModule : Module() {
 
       val createdGatt = try {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-          device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+          device.connectGatt(context, false, createGattCallback(attemptId), BluetoothDevice.TRANSPORT_LE)
         } else {
-          device.connectGatt(context, false, gattCallback)
+          device.connectGatt(context, false, createGattCallback(attemptId))
         }
       } catch (error: SecurityException) {
-        synchronized(stateLock) { connectionContinuation = null }
+        clearConnectionAttempt(continuation, attemptId)
         continuation.resumeWithException(
           IllegalStateException("BLUETOOTH_PERMISSION_REQUIRED: Allow Nearby devices access to connect to the N12.", error)
         )
@@ -302,17 +338,26 @@ class PriceTagPrinterModule : Module() {
       }
 
       if (createdGatt == null) {
-        synchronized(stateLock) { connectionContinuation = null }
+        clearConnectionAttempt(continuation, attemptId)
         continuation.resumeWithException(
           IOException("N12_CONNECTION_FAILED: Android could not open a BLE connection to the selected printer.")
         )
       } else {
-        synchronized(stateLock) {
-          gatt = createdGatt
-          connectedAddress = normalizedAddress
-          maxPacketBytes = DEFAULT_PACKET_BYTES
-          flowControlEnabled = false
-          availableCredits = FALLBACK_CREDITS
+        val shouldCloseCreatedGatt = synchronized(stateLock) {
+          if (pendingConnectionAttemptId == attemptId && gatt == null) {
+            gatt = createdGatt
+            false
+          } else {
+            gatt !== createdGatt
+          }
+        }
+        if (shouldCloseCreatedGatt) {
+          try {
+            createdGatt.disconnect()
+            createdGatt.close()
+          } catch (_: SecurityException) {
+            // The connection attempt is already being released.
+          }
         }
       }
 
@@ -327,35 +372,62 @@ class PriceTagPrinterModule : Module() {
     }
   }
 
-  private suspend fun printLabel(payload: Map<String, Any?>) {
-    val lines = (payload["lines"] as? List<*>)
-      ?.mapNotNull { value -> value as? String }
-      ?.filter { line -> line.isNotBlank() }
-      ?: emptyList()
-    if (lines.isEmpty()) {
-      throw IllegalArgumentException("N12_LABEL_EMPTY: This label has no printable fields.")
+  private suspend fun printLabel(payload: Map<String, Any?>): Map<String, Any?> {
+    if (!printMutex.tryLock()) {
+      throw IllegalStateException("N12_PRINT_IN_PROGRESS: Wait for the current N12 label to finish before sending another.")
     }
-    val hasConnection = synchronized(stateLock) { gatt != null && writeCharacteristic != null }
-    if (!hasConnection) {
-      throw IllegalStateException("PRINTER_NOT_CONNECTED: Select and connect your N12 before printing.")
+    try {
+      val lines = (payload["lines"] as? List<*>)
+        ?.mapNotNull { value -> value as? String }
+        ?.filter { line -> line.isNotBlank() }
+        ?: emptyList()
+      if (lines.isEmpty()) {
+        throw IllegalArgumentException("N12_LABEL_EMPTY: This label has no printable fields.")
+      }
+      val hasConnection = synchronized(stateLock) { gatt != null && writeCharacteristic != null }
+      if (!hasConnection) {
+        throw IllegalStateException("PRINTER_NOT_CONNECTED: Select and connect your N12 before printing.")
+      }
+      val job = createN12PrintJob(lines)
+      val rasterDelivery = sendPayload(job.headerAndImage)
+      // The printer needs time to decompress and stage the raster before it
+      // receives the stop/feed footer. Sending both phases back-to-back can
+      // look successful at the BLE layer while the N12 silently drops the job.
+      delay(PRINT_RASTER_PROCESSING_DELAY_MS)
+      val footerDelivery = sendPayload(job.footer)
+      // Keep the GATT link up while the printer starts the physical feed.
+      delay(PRINT_DISPATCH_SETTLE_MS)
+      val result = combineDeliveryResults(rasterDelivery, footerDelivery)
+      return mapOf(
+        "packetCount" to result.packetCount,
+        "acknowledgedPacketCount" to result.acknowledgedPacketCount,
+        "writeMode" to result.writeMode,
+        "packetBytes" to result.packetBytes,
+        "usedFlowControl" to result.usedFlowControl
+      )
+    } finally {
+      printMutex.unlock()
     }
-    sendPayload(createN12PrintJob(lines))
   }
 
-  private fun createN12PrintJob(lines: List<String>): ByteArray {
+  private fun createN12PrintJob(lines: List<String>): N12PrintJob {
     val bitmap = renderLabel(lines)
     val imagePayload = createImageCommand(bitmap)
-    return ByteArrayOutputStream().apply {
+    val headerAndImage = ByteArrayOutputStream().apply {
       // Gap label, medium-dark density, start and align.
       write(byteArrayOf(0x1F, 0x80.toByte(), 0x01, 0x20))
       write(byteArrayOf(0x1F, 0x70, 0x01, 0x0B))
       write(byteArrayOf(0x1F, 0xC0.toByte(), 0x01, 0x00))
       write(byteArrayOf(0x1F, 0x11, 0x51))
       write(imagePayload)
-      // Complete the job and advance to the next label.
+    }.toByteArray()
+    val footer = ByteArrayOutputStream().apply {
+      // Complete the job and advance to the next label only after the N12
+      // has had time to stage the full compressed raster.
       write(byteArrayOf(0x1F, 0xC0.toByte(), 0x01, 0x01))
       write(byteArrayOf(0x1F, 0x11, 0x50))
     }.toByteArray()
+    return N12PrintJob(headerAndImage, footer)
   }
 
   private fun renderLabel(lines: List<String>): Bitmap {
@@ -474,64 +546,127 @@ class PriceTagPrinterModule : Module() {
     return (s2 shl 16) or s1
   }
 
-  private suspend fun sendPayload(payload: ByteArray) {
+  private suspend fun sendPayload(payload: ByteArray): PrintDeliveryResult {
     var offset = 0
+    var packetCount = 0
+    var acknowledgedPacketCount = 0
+    var usedFlowControl = false
+    var largestPacketBytes = DEFAULT_PACKET_BYTES
+    var writeMode = "acknowledged"
     while (offset < payload.size) {
-      val packetSize = synchronized(stateLock) { maxPacketBytes.coerceIn(20, MAX_PACKET_BYTES) }
-      val end = minOf(offset + packetSize, payload.size)
-      consumeFlowCredit()
-      writePacket(payload.copyOfRange(offset, end))
+      val end = minOf(offset + DEFAULT_PACKET_BYTES, payload.size)
+      usedFlowControl = consumeFlowCredit() || usedFlowControl
+      val acknowledged = writePacket(payload.copyOfRange(offset, end))
       offset = end
+      packetCount += 1
+      if (acknowledged) {
+        acknowledgedPacketCount += 1
+      } else {
+        writeMode = "no-response-queued"
+      }
       delay(PACKET_DELAY_MS)
     }
+    return PrintDeliveryResult(
+      packetCount = packetCount,
+      acknowledgedPacketCount = acknowledgedPacketCount,
+      writeMode = writeMode,
+      packetBytes = largestPacketBytes,
+      usedFlowControl = usedFlowControl
+    )
   }
 
-  private suspend fun consumeFlowCredit() {
-    val shouldWait = synchronized(stateLock) {
+  private fun combineDeliveryResults(
+    rasterDelivery: PrintDeliveryResult,
+    footerDelivery: PrintDeliveryResult
+  ): PrintDeliveryResult {
+    return PrintDeliveryResult(
+      packetCount = rasterDelivery.packetCount + footerDelivery.packetCount,
+      acknowledgedPacketCount = rasterDelivery.acknowledgedPacketCount + footerDelivery.acknowledgedPacketCount,
+      writeMode = if (
+        rasterDelivery.writeMode == "no-response-queued" ||
+        footerDelivery.writeMode == "no-response-queued"
+      ) {
+        "no-response-queued"
+      } else {
+        "acknowledged"
+      },
+      packetBytes = maxOf(rasterDelivery.packetBytes, footerDelivery.packetBytes),
+      usedFlowControl = rasterDelivery.usedFlowControl || footerDelivery.usedFlowControl
+    )
+  }
+
+  private suspend fun consumeFlowCredit(): Boolean {
+    var activeGatt: BluetoothGatt? = null
+    val availableCredit = synchronized(stateLock) {
+      activeGatt = gatt
       if (!flowControlEnabled) {
         false
-      } else if (availableCredits > 0) {
-        availableCredits -= 1
-        false
-      } else {
+      } else if (availableFlowCredits > 0) {
+        availableFlowCredits -= 1
         true
+      } else {
+        null
       }
     }
-    if (!shouldWait) return
+    if (availableCredit != null) return availableCredit
 
-    val receivedCredit = withTimeoutOrNull(FLOW_CONTROL_TIMEOUT_MS) {
+    val receivedCredit = withTimeoutOrNull(FLOW_CREDIT_TIMEOUT_MS) {
       suspendCancellableCoroutine<Unit> { continuation ->
-        val useAvailableCredit = synchronized(stateLock) {
-          if (availableCredits > 0) {
-            availableCredits -= 1
-            true
-          } else {
-            creditContinuation = continuation
-            false
+        val canSend = synchronized(stateLock) {
+          when {
+            !flowControlEnabled -> true
+            availableFlowCredits > 0 -> {
+              availableFlowCredits -= 1
+              true
+            }
+            else -> {
+              flowCreditContinuation = continuation
+              false
+            }
           }
         }
-        if (useAvailableCredit) {
+        if (canSend) {
           continuation.resume(Unit)
         }
         continuation.invokeOnCancellation {
           synchronized(stateLock) {
-            if (creditContinuation === continuation) creditContinuation = null
+            if (flowCreditContinuation === continuation) {
+              flowCreditContinuation = null
+            }
           }
         }
       }
     }
+
     if (receivedCredit == null) {
-      // Some N12 firmware versions omit FF03 notifications. Continue safely
-      // with paced writes rather than leaving the user in an endless print state.
-      synchronized(stateLock) {
-        flowControlEnabled = false
-        availableCredits = FALLBACK_CREDITS
+      val canFallBack = synchronized(stateLock) {
+        if (flowControlEnabled && firstFlowCreditPending) {
+          // A subscribed FF03 characteristic did not send its initial grant.
+          // Treat it as an optional feature for this connection rather than
+          // making the first print wait forever.
+          flowControlEnabled = false
+          firstFlowCreditPending = false
+          availableFlowCredits = FALLBACK_FLOW_CREDITS
+          flowCreditContinuation = null
+          true
+        } else {
+          false
+        }
       }
+      if (!canFallBack) {
+        val error = IOException(
+          "N12_FLOW_CONTROL_TIMED_OUT: The N12 stopped granting print-buffer credits. Reconnect and try again."
+        )
+        activeGatt?.let { closeConnection(it, error) }
+        throw error
+      }
+      return false
     }
+    return true
   }
 
   @SuppressLint("MissingPermission")
-  private suspend fun writePacket(packet: ByteArray) {
+  private suspend fun writePacket(packet: ByteArray): Boolean {
     val activeGatt: BluetoothGatt
     val characteristic: BluetoothGattCharacteristic
     val writeWithoutResponse: Boolean
@@ -567,20 +702,26 @@ class PriceTagPrinterModule : Module() {
       if (!queued) {
         throw IOException("N12_WRITE_FAILED: The printer did not accept a label packet. Keep it powered on and try again.")
       }
-      return
+      return false
     }
 
     val writeCompleted = withTimeoutOrNull(PACKET_WRITE_TIMEOUT_MS) {
       suspendCancellableCoroutine<Unit> { continuation ->
-      synchronized(stateLock) {
-        writeContinuation = continuation
-      }
+        val attemptId = synchronized(stateLock) {
+          writeAttemptId += 1
+          pendingWriteAttemptId = writeAttemptId
+          writeContinuation = continuation
+          writeAttemptId
+        }
        val queued = try {
          @Suppress("DEPRECATION")
          activeGatt.writeCharacteristic(characteristic)
        } catch (error: SecurityException) {
          synchronized(stateLock) {
-           if (writeContinuation === continuation) writeContinuation = null
+            if (writeContinuation === continuation && pendingWriteAttemptId == attemptId) {
+              writeContinuation = null
+              pendingWriteAttemptId = null
+            }
          }
          continuation.resumeWithException(
            IllegalStateException(
@@ -590,32 +731,45 @@ class PriceTagPrinterModule : Module() {
          )
          return@suspendCancellableCoroutine
        }
-      if (!queued) {
-        synchronized(stateLock) {
-          if (writeContinuation === continuation) writeContinuation = null
+        if (!queued) {
+          synchronized(stateLock) {
+            if (writeContinuation === continuation && pendingWriteAttemptId == attemptId) {
+              writeContinuation = null
+              pendingWriteAttemptId = null
+            }
+          }
+          continuation.resumeWithException(
+            IOException("N12_WRITE_FAILED: The printer did not accept a label packet. Keep it powered on and try again.")
+          )
         }
-        continuation.resumeWithException(
-          IOException("N12_WRITE_FAILED: The printer did not accept a label packet. Keep it powered on and try again.")
-        )
-      }
-      continuation.invokeOnCancellation {
-        synchronized(stateLock) {
-          if (writeContinuation === continuation) writeContinuation = null
+        continuation.invokeOnCancellation {
+          val wasPending = synchronized(stateLock) {
+            if (writeContinuation === continuation && pendingWriteAttemptId == attemptId) {
+              writeContinuation = null
+              pendingWriteAttemptId = null
+              true
+            } else {
+              false
+            }
+          }
+          if (wasPending) {
+            // The callback for a cancelled or timed-out Android GATT operation
+            // can arrive late. Closing this session prevents it from being
+            // mistaken for a callback for a later packet.
+            closeConnection(activeGatt, null)
+          }
         }
-      }
       }
     }
     if (writeCompleted == null) {
-      synchronized(stateLock) {
-        writeContinuation = null
-      }
       throw IOException("N12_WRITE_TIMED_OUT: The N12 stopped acknowledging a label packet. Reconnect and try again.")
     }
+    return true
   }
 
-  private val gattCallback = object : BluetoothGattCallback() {
+  private fun createGattCallback(attemptId: Long) = object : BluetoothGattCallback() {
     override fun onConnectionStateChange(activeGatt: BluetoothGatt, status: Int, newState: Int) {
-      if (!isCurrentGatt(activeGatt)) return
+      if (!isCurrentGatt(activeGatt, attemptId)) return
       if (status != BluetoothGatt.GATT_SUCCESS) {
         closeConnection(activeGatt, IOException("N12_CONNECTION_FAILED: The N12 disconnected during setup (status $status)."))
         return
@@ -630,7 +784,7 @@ class PriceTagPrinterModule : Module() {
     }
 
     override fun onServicesDiscovered(activeGatt: BluetoothGatt, status: Int) {
-      if (!isCurrentGatt(activeGatt)) return
+      if (!isCurrentGatt(activeGatt, attemptId)) return
       if (status != BluetoothGatt.GATT_SUCCESS) {
         closeConnection(activeGatt, IOException("N12_SERVICE_DISCOVERY_FAILED: Android could not inspect the N12 print service."))
         return
@@ -650,7 +804,6 @@ class PriceTagPrinterModule : Module() {
         return
       }
 
-      val flow = service.getCharacteristic(FLOW_CONTROL_CHARACTERISTIC_UUID)
       val supportsWrite = output.properties and BluetoothGattCharacteristic.PROPERTY_WRITE != 0
       val supportsWriteWithoutResponse =
         output.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE != 0
@@ -662,57 +815,22 @@ class PriceTagPrinterModule : Module() {
       }
       synchronized(stateLock) {
         writeCharacteristic = output
-        writesWithoutResponse = supportsWriteWithoutResponse
-        flowControlEnabled = false
-        availableCredits = FALLBACK_CREDITS
+        // Prefer acknowledged writes whenever the printer exposes them. On N12
+        // firmware that supports both modes, WRITE_NO_RESPONSE only confirms
+        // Android accepted the packet locally; it cannot tell us whether the
+        // printer received the raster data.
+        writesWithoutResponse = !supportsWrite && supportsWriteWithoutResponse
       }
 
-      if (
-        flow != null &&
-        flow.properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY != 0 &&
-        activeGatt.setCharacteristicNotification(flow, true)
-      ) {
-        val descriptor = flow.getDescriptor(CLIENT_CONFIGURATION_UUID)
-        if (descriptor != null) {
-          descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-          synchronized(stateLock) {
-            awaitingFlowDescriptor = true
-          }
-          @Suppress("DEPRECATION")
-          if (activeGatt.writeDescriptor(descriptor)) {
-            return
-          }
-          synchronized(stateLock) {
-            awaitingFlowDescriptor = false
-          }
-        }
-      }
-      requestMtuOrComplete(activeGatt)
-    }
-
-    override fun onDescriptorWrite(
-      activeGatt: BluetoothGatt,
-      descriptor: BluetoothGattDescriptor,
-      status: Int
-    ) {
-      if (!isCurrentGatt(activeGatt)) return
-      if (descriptor.characteristic.uuid != FLOW_CONTROL_CHARACTERISTIC_UUID) return
       synchronized(stateLock) {
-        awaitingFlowDescriptor = false
-        flowControlEnabled = status == BluetoothGatt.GATT_SUCCESS
-        availableCredits = if (flowControlEnabled) 0 else FALLBACK_CREDITS
+        flowCharacteristic = null
+        flowControlEnabled = false
+        flowControlSetupPending = false
+        flowControlSetupExpired = false
+        firstFlowCreditPending = false
+        availableFlowCredits = FALLBACK_FLOW_CREDITS
       }
-      requestMtuOrComplete(activeGatt)
-    }
-
-    override fun onMtuChanged(activeGatt: BluetoothGatt, mtu: Int, status: Int) {
-      if (!isCurrentGatt(activeGatt)) return
-      if (status == BluetoothGatt.GATT_SUCCESS) {
-        synchronized(stateLock) {
-          maxPacketBytes = (mtu - 3).coerceIn(20, MAX_PACKET_BYTES)
-        }
-      }
-      completeConnection(activeGatt)
+      scheduleConnectionCompletion(activeGatt, attemptId, PRINTER_READY_DELAY_MS)
     }
 
     override fun onCharacteristicChanged(
@@ -720,27 +838,20 @@ class PriceTagPrinterModule : Module() {
       characteristic: BluetoothGattCharacteristic,
       value: ByteArray
     ) {
-      if (!isCurrentGatt(activeGatt)) return
-      if (characteristic.uuid != FLOW_CONTROL_CHARACTERISTIC_UUID || value.size < 2 || value[0] != 0x01.toByte()) {
-        return
-      }
-      val continuation = synchronized(stateLock) {
-        availableCredits += (value[1].toInt() and 0xFF)
-        if (availableCredits > 0 && creditContinuation != null) {
-          availableCredits -= 1
-          creditContinuation.also { creditContinuation = null }
-        } else {
-          null
-        }
-      }
-      continuation?.let { waiter ->
-        if (waiter.isActive) waiter.resume(Unit)
-      }
+      handleFlowControlNotification(activeGatt, attemptId, characteristic, value)
     }
 
-    @Deprecated("Deprecated in Java")
-    override fun onCharacteristicChanged(activeGatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
-      onCharacteristicChanged(activeGatt, characteristic, characteristic.value ?: byteArrayOf())
+    @Suppress("DEPRECATION")
+    override fun onCharacteristicChanged(
+      activeGatt: BluetoothGatt,
+      characteristic: BluetoothGattCharacteristic
+    ) {
+      handleFlowControlNotification(
+        activeGatt,
+        attemptId,
+        characteristic,
+        characteristic.value ?: byteArrayOf()
+      )
     }
 
     override fun onCharacteristicWrite(
@@ -748,9 +859,15 @@ class PriceTagPrinterModule : Module() {
       characteristic: BluetoothGattCharacteristic,
       status: Int
     ) {
-      if (!isCurrentGatt(activeGatt)) return
+      if (!isCurrentGatt(activeGatt, attemptId)) return
+      if (characteristic.uuid != WRITE_CHARACTERISTIC_UUID) return
       val continuation = synchronized(stateLock) {
-        writeContinuation.also { writeContinuation = null }
+        if (pendingWriteAttemptId == null) {
+          null
+        } else {
+          pendingWriteAttemptId = null
+          writeContinuation.also { writeContinuation = null }
+        }
       }
       continuation?.let { pending ->
         if (!pending.isActive) return@let
@@ -765,12 +882,91 @@ class PriceTagPrinterModule : Module() {
     }
   }
 
-  private fun isCurrentGatt(candidate: BluetoothGatt): Boolean =
-    synchronized(stateLock) { gatt === candidate }
+  private fun handleFlowControlNotification(
+    activeGatt: BluetoothGatt,
+    attemptId: Long,
+    characteristic: BluetoothGattCharacteristic,
+    value: ByteArray
+  ) {
+    if (!isCurrentGatt(activeGatt, attemptId)) return
+    if (characteristic.uuid != FLOW_CONTROL_CHARACTERISTIC_UUID || value.size < 2 || value[0].toInt() != 0x01) {
+      return
+    }
+    val continuation = synchronized(stateLock) {
+      if (!flowControlEnabled && !(flowControlSetupPending && !flowControlSetupExpired)) {
+        null
+      } else {
+        // Protocol 0x01 grants one packet credit per unit. Existing
+        // PrintMaster implementations preserve 0x04 as four credits.
+        val granted = value[1].toInt() and 0xFF
+        availableFlowCredits += if (granted == 0x04) 4 else granted
+        if (availableFlowCredits > 0) {
+          firstFlowCreditPending = false
+        }
+        if (availableFlowCredits > 0) {
+          flowCreditContinuation?.also {
+            availableFlowCredits -= 1
+            flowCreditContinuation = null
+          }
+        } else {
+          null
+        }
+      }
+    }
+    if (continuation?.isActive == true) {
+      continuation.resume(Unit)
+    }
+  }
+
+  private fun scheduleConnectionCompletion(
+    activeGatt: BluetoothGatt,
+    attemptId: Long,
+    delayMs: Long
+  ) {
+    mainHandler.postDelayed(
+      {
+        val canComplete = synchronized(stateLock) {
+          if (
+            gatt !== activeGatt ||
+            pendingConnectionAttemptId != attemptId ||
+            connectionContinuation == null
+          ) {
+            false
+          } else {
+            true
+          }
+        }
+        if (canComplete) {
+          completeConnection(activeGatt)
+        }
+      },
+      delayMs
+    )
+  }
+
+  private fun isCurrentGatt(candidate: BluetoothGatt, attemptId: Long): Boolean =
+    synchronized(stateLock) {
+      if (gatt === candidate) {
+        true
+      } else if (
+        gatt == null &&
+        pendingConnectionAttemptId == attemptId &&
+        connectionContinuation != null
+      ) {
+        // Android can dispatch a connection callback before connectGatt
+        // returns. This callback owns only its matching attempt.
+        gatt = candidate
+        true
+      } else {
+        false
+      }
+    }
 
   private fun completeConnection(activeGatt: BluetoothGatt) {
-    if (!isCurrentGatt(activeGatt)) return
+    if (synchronized(stateLock) { gatt !== activeGatt }) return
     val continuation = synchronized(stateLock) {
+      pendingConnectionAttemptId = null
+      reservedConnectionAttemptId = null
       connectionContinuation.also { connectionContinuation = null }
     }
     if (continuation?.isActive == true) {
@@ -779,44 +975,72 @@ class PriceTagPrinterModule : Module() {
     }
   }
 
-  private fun requestMtuOrComplete(activeGatt: BluetoothGatt) {
-    // MTU negotiation is an optimization only. Several inexpensive BLE
-    // printers never send onMtuChanged even after accepting the request, which
-    // previously made an otherwise usable connection time out after 12 seconds.
-    try {
-      activeGatt.requestMtu(REQUESTED_MTU)
-    } catch (_: SecurityException) {
-      // The connection can still use the safe 20-byte default packets.
+  private fun clearConnectionAttempt(
+    continuation: CancellableContinuation<Map<String, String>>,
+    attemptId: Long
+  ) {
+    synchronized(stateLock) {
+      if (connectionContinuation === continuation && pendingConnectionAttemptId == attemptId) {
+        connectionContinuation = null
+        pendingConnectionAttemptId = null
+        reservedConnectionAttemptId = null
+        connectedAddress = null
+      }
     }
-    completeConnection(activeGatt)
   }
 
-  private fun closeConnection(reason: Throwable? = null) {
-    closeConnection(expectedGatt = null, reason = reason)
+  private fun releaseConnectionReservation(attemptId: Long) {
+    synchronized(stateLock) {
+      if (reservedConnectionAttemptId == attemptId) {
+        reservedConnectionAttemptId = null
+      }
+    }
   }
 
-  private fun closeConnection(expectedGatt: BluetoothGatt?, reason: Throwable?) {
+  private fun closeConnection(
+    reason: Throwable? = null,
+    preserveConnectionReservation: Boolean = false
+  ) {
+    closeConnection(
+      expectedGatt = null,
+      reason = reason,
+      preserveConnectionReservation = preserveConnectionReservation
+    )
+  }
+
+  private fun closeConnection(
+    expectedGatt: BluetoothGatt?,
+    reason: Throwable?,
+    preserveConnectionReservation: Boolean = false
+  ) {
     val toFailConnection: CancellableContinuation<Map<String, String>>?
     val toFailWrite: CancellableContinuation<Unit>?
-    val toFailCredit: CancellableContinuation<Unit>?
+    val toFailFlowCredit: CancellableContinuation<Unit>?
     val activeGatt: BluetoothGatt?
     synchronized(stateLock) {
       if (expectedGatt != null && gatt !== expectedGatt) return
       toFailConnection = connectionContinuation
       toFailWrite = writeContinuation
-      toFailCredit = creditContinuation
+      toFailFlowCredit = flowCreditContinuation
       connectionContinuation = null
       writeContinuation = null
-      creditContinuation = null
+      pendingWriteAttemptId = null
+      flowCreditContinuation = null
+      pendingConnectionAttemptId = null
+      if (!preserveConnectionReservation) {
+        reservedConnectionAttemptId = null
+      }
       activeGatt = gatt
       gatt = null
       writeCharacteristic = null
+      flowCharacteristic = null
       connectedAddress = null
       writesWithoutResponse = false
-      awaitingFlowDescriptor = false
       flowControlEnabled = false
-      availableCredits = FALLBACK_CREDITS
-      maxPacketBytes = DEFAULT_PACKET_BYTES
+      flowControlSetupPending = false
+      flowControlSetupExpired = false
+      firstFlowCreditPending = false
+      availableFlowCredits = FALLBACK_FLOW_CREDITS
     }
     try {
       activeGatt?.disconnect()
@@ -827,27 +1051,41 @@ class PriceTagPrinterModule : Module() {
     if (reason != null) {
       if (toFailConnection?.isActive == true) toFailConnection.resumeWithException(reason)
       if (toFailWrite?.isActive == true) toFailWrite.resumeWithException(reason)
-      if (toFailCredit?.isActive == true) toFailCredit.resumeWithException(reason)
+      if (toFailFlowCredit?.isActive == true) toFailFlowCredit.resumeWithException(reason)
     }
   }
 
   companion object {
+    private data class PrintDeliveryResult(
+      val packetCount: Int,
+      val acknowledgedPacketCount: Int,
+      val writeMode: String,
+      val packetBytes: Int,
+      val usedFlowControl: Boolean
+    )
+
+    private data class N12PrintJob(
+      val headerAndImage: ByteArray,
+      val footer: ByteArray
+    )
+
     private val PRINTER_SERVICE_UUID: UUID = UUID.fromString("0000ff00-0000-1000-8000-00805f9b34fb")
     private val WRITE_CHARACTERISTIC_UUID: UUID = UUID.fromString("0000ff02-0000-1000-8000-00805f9b34fb")
     private val FLOW_CONTROL_CHARACTERISTIC_UUID: UUID = UUID.fromString("0000ff03-0000-1000-8000-00805f9b34fb")
-    private val CLIENT_CONFIGURATION_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+    private val CLIENT_CHARACTERISTIC_CONFIG_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
     private const val SCAN_DURATION_MS = 6_000L
-    private const val FLOW_CONTROL_TIMEOUT_MS = 1_500L
     private const val CONNECTION_TIMEOUT_MS = 12_000L
     private const val PACKET_WRITE_TIMEOUT_MS = 3_000L
     private const val PACKET_DELAY_MS = 3L
+    private const val PRINTER_READY_DELAY_MS = 300L
+    private const val FLOW_CREDIT_TIMEOUT_MS = 1_500L
+    private const val PRINT_RASTER_PROCESSING_DELAY_MS = 2_000L
+    private const val PRINT_DISPATCH_SETTLE_MS = 1_500L
     private const val GATT_RECONNECT_DELAY_MS = 250L
-    private const val REQUESTED_MTU = 247
     private const val DEFAULT_PACKET_BYTES = 20
-    private const val MAX_PACKET_BYTES = 200
-    private const val FALLBACK_CREDITS = 1_000
     private const val ZLIB_BLOCK_SIZE = 1_024
+    private const val FALLBACK_FLOW_CREDITS = 1_000
 
     // 12 mm at 203 dpi is approximately 96 thermal dots across.
     private const val LABEL_WIDTH_DOTS = 96
