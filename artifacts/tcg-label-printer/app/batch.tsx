@@ -163,6 +163,7 @@ export default function BatchQueueScreen() {
 
     setPrinting(true);
     const failedItems: string[] = [];
+    const failedReasons: string[] = [];
     let savedForNativeBuild = 0;
     try {
       for (const item of items) {
@@ -185,6 +186,7 @@ export default function BatchQueueScreen() {
             savedForNativeBuild += 1;
           } else {
             failedItems.push(item.queueId);
+            failedReasons.push(message);
           }
         }
       }
@@ -203,9 +205,10 @@ export default function BatchQueueScreen() {
       );
 
       if (failedItems.length) {
+        const uniqueReasons = [...new Set(failedReasons.map((r) => r.split(':')[0]))].join(', ');
         Alert.alert(
           'Some labels need retrying',
-          `${failedItems.length} label${failedItems.length === 1 ? '' : 's'} could not be sent. They remain in the queue so you can retry after checking the printer connection.`,
+          `${failedItems.length} label${failedItems.length === 1 ? '' : 's'} could not be sent (${uniqueReasons}). They remain in the queue so you can retry after checking the printer connection.`,
         );
         return;
       }

@@ -556,7 +556,17 @@ class PriceTagPrinterModule : Module() {
     while (offset < payload.size) {
       val end = minOf(offset + DEFAULT_PACKET_BYTES, payload.size)
       usedFlowControl = consumeFlowCredit() || usedFlowControl
-      val acknowledged = writePacket(payload.copyOfRange(offset, end))
+      val packet = payload.copyOfRange(offset, end)
+      // Retry once if the BLE queue briefly rejects the packet. This handles
+      // the case where Android has not yet cleared the queue from the previous
+      // acknowledged write even though the callback arrived.
+      val acknowledged = try {
+        writePacket(packet)
+      } catch (firstError: IOException) {
+        if (!firstError.message.orEmpty().startsWith("N12_WRITE_FAILED")) throw firstError
+        delay(PACKET_RETRY_DELAY_MS)
+        writePacket(packet)
+      }
       offset = end
       packetCount += 1
       if (acknowledged) {
@@ -1076,8 +1086,9 @@ class PriceTagPrinterModule : Module() {
 
     private const val SCAN_DURATION_MS = 6_000L
     private const val CONNECTION_TIMEOUT_MS = 12_000L
-    private const val PACKET_WRITE_TIMEOUT_MS = 3_000L
+    private const val PACKET_WRITE_TIMEOUT_MS = 8_000L
     private const val PACKET_DELAY_MS = 3L
+    private const val PACKET_RETRY_DELAY_MS = 120L
     private const val PRINTER_READY_DELAY_MS = 300L
     private const val FLOW_CREDIT_TIMEOUT_MS = 1_500L
     private const val PRINT_RASTER_PROCESSING_DELAY_MS = 2_000L
