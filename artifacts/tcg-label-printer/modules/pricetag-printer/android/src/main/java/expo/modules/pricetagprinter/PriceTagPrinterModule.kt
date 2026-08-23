@@ -433,18 +433,18 @@ class PriceTagPrinterModule : Module() {
     val bitmap = renderLabel(lines)
     val imagePayload = createImageCommand(bitmap)
     val headerAndImage = ByteArrayOutputStream().apply {
-      // Gap label, medium-dark density, start and align.
-      write(byteArrayOf(0x1F, 0x80.toByte(), 0x01, 0x20))
+      // 0x80: media/gap type — 0x00 = gap/continuous sensing.
+      write(byteArrayOf(0x1F, 0x80.toByte(), 0x01, 0x00))
+      // 0x70: print density 0–15. 0x0B (11) = medium-dark.
       write(byteArrayOf(0x1F, 0x70, 0x01, 0x0B))
-      write(byteArrayOf(0x1F, 0xC0.toByte(), 0x01, 0x00))
-      write(byteArrayOf(0x1F, 0x11, 0x51))
+      // Image raster follows immediately after setup bytes.
       write(imagePayload)
     }.toByteArray()
     val footer = ByteArrayOutputStream().apply {
-      // Complete the job and advance to the next label only after the N12
-      // has had time to stage the full compressed raster.
-      write(byteArrayOf(0x1F, 0xC0.toByte(), 0x01, 0x01))
-      write(byteArrayOf(0x1F, 0x11, 0x50))
+      // 0x1F 0x1B 0x50 = DLE ESC 'P': print-and-feed trigger.
+      // Sent after the raster processing delay so the N12 has staged
+      // the full decompressed image before the feed command arrives.
+      write(byteArrayOf(0x1F, 0x1B, 0x50))
     }.toByteArray()
     return N12PrintJob(headerAndImage, footer)
   }
