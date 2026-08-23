@@ -23,7 +23,7 @@ import {
   type PriceCondition,
 } from '@/services/priceSelection';
 import { addHistoryEntry } from '@/services/history';
-import { sendToPrinter } from '@/services/printer';
+import { sendToPrinter, extractPrinterErrorMessage } from '@/services/printer';
 import { formatPrice } from '@/services/pricecharting';
 import { LabelPresetPicker } from '@/components/LabelPresetPicker';
 import type { LabelField, LabelPresetId } from '@/services/labelPresets';
@@ -205,10 +205,13 @@ export default function BatchQueueScreen() {
       );
 
       if (failedItems.length) {
-        const uniqueReasons = [...new Set(failedReasons.map((r) => r.split(':')[0]))].join(', ');
+        const uniqueMessages = [
+          ...new Set(failedReasons.map((r) => extractPrinterErrorMessage(new Error(r)))),
+        ];
+        const summary = uniqueMessages.slice(0, 2).join('\n');
         Alert.alert(
           'Some labels need retrying',
-          `${failedItems.length} label${failedItems.length === 1 ? '' : 's'} could not be sent (${uniqueReasons}). They remain in the queue so you can retry after checking the printer connection.`,
+          `${failedItems.length} label${failedItems.length === 1 ? '' : 's'} could not be sent.\n\n${summary}\n\nThey remain in the queue so you can retry.`,
         );
         return;
       }

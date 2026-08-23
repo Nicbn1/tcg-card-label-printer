@@ -261,6 +261,25 @@ class PriceTagPrinterModule : Module() {
     if (normalizedAddress.isBlank()) {
       throw IllegalArgumentException("PRINTER_ADDRESS_REQUIRED: Choose your nearby N12 in Settings before printing.")
     }
+
+    // Detect a stale GATT that Android has not cleaned up yet. The N12 can
+    // go to sleep without sending a BLE disconnect, leaving our gatt field
+    // non-null while the radio link is dead. Check with BluetoothManager
+    // before the lock so we don't hold stateLock across a system API call.
+    val looksConnected = synchronized(stateLock) {
+      gatt != null && writeCharacteristic != null && connectedAddress == normalizedAddress
+    }
+    if (looksConnected) {
+      val mgr = appContext.reactContext?.applicationContext
+        ?.getSystemService(android.content.Context.BLUETOOTH_SERVICE) as? android.bluetooth.BluetoothManager
+      val dev = try { BluetoothAdapter.getDefaultAdapter()?.getRemoteDevice(normalizedAddress) } catch (_: Throwable) { null }
+      val actuallyConnected = dev != null &&
+        mgr?.getConnectionState(dev, BluetoothProfile.GATT) == BluetoothProfile.STATE_CONNECTED
+      if (!actuallyConnected) {
+        closeConnection(IOException("N12_DISCONNECTED: The N12 disconnected. Wake it and reconnect before printing."))
+      }
+    }
+
     val connectionAttempt = synchronized(stateLock) {
       if (reservedConnectionAttemptId != null || connectionContinuation != null) {
         throw IllegalStateException("N12_CONNECTION_IN_PROGRESS: Wait for the current N12 connection attempt to finish.")

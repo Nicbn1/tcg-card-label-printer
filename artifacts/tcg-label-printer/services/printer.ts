@@ -169,6 +169,26 @@ export async function getPrinterConnection(): Promise<PrinterConnection> {
   return PriceTagPrinter.getConnectionStateAsync();
 }
 
+/**
+ * Extracts a user-readable sentence from a printer error.
+ *
+ * Expo native module rejections wrap the original Kotlin exception inside a
+ * verbose envelope:
+ *   "Call to function '...' has been rejected.\n-> Caused by: SomeClass: CODE: message"
+ *
+ * All Kotlin errors in PriceTagPrinterModule follow the pattern
+ * "UPPER_SNAKE_CODE: Human-readable sentence." This function finds that
+ * sentence, stripping both the code prefix and any Expo wrapper, so callers
+ * always surface plain English to the user.
+ */
+export function extractPrinterErrorMessage(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  // Match "UPPER_CODE: sentence" anywhere in the string — works on bare
+  // Kotlin throws and on Expo's multi-line rejection envelope.
+  const match = raw.match(/\b[A-Z][A-Z0-9_]+:\s+([^\n]+)/);
+  return match ? match[1].trim() : raw;
+}
+
 export async function sendToPrinter(
   deviceAddress: string,
   label: LabelData,

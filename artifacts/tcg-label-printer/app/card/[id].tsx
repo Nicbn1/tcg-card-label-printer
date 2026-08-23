@@ -15,7 +15,7 @@ import { Feather } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useColors } from '@/hooks/useColors';
 import { formatPrice } from '@/services/pricecharting';
-import { type LabelData, sendToPrinter } from '@/services/printer';
+import { type LabelData, sendToPrinter, extractPrinterErrorMessage } from '@/services/printer';
 import { addHistoryEntry } from '@/services/history';
 import { PrintLabel } from '@/components/PrintLabel';
 import { LabelPresetPicker } from '@/components/LabelPresetPicker';
@@ -125,12 +125,15 @@ export default function CardDetailScreen() {
         [{ text: 'OK' }],
       );
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      const isExpoGo = msg.includes('EXPO_GO_ONLY');
+      const raw = err instanceof Error ? err.message : String(err);
+      const isExpoGo = raw.includes('EXPO_GO_ONLY');
+      const msg = isExpoGo
+        ? 'Bluetooth printing requires an Android APK.'
+        : extractPrinterErrorMessage(err);
 
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
       setPrinted(true); // mark saved
-      setPrintReport(`Print error: ${isExpoGo ? 'Bluetooth printing requires an Android APK.' : msg}`);
+      setPrintReport(`Print error: ${msg}`);
 
       Alert.alert(
         isExpoGo ? 'Saved to History' : 'Print Error',
@@ -170,11 +173,14 @@ export default function CardDetailScreen() {
         [{ text: 'OK' }],
       );
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      const isExpoGo = msg.includes('EXPO_GO_ONLY');
+      const raw = err instanceof Error ? err.message : String(err);
+      const isExpoGo = raw.includes('EXPO_GO_ONLY');
+      const msg = isExpoGo
+        ? 'Bluetooth printing requires an Android APK.'
+        : extractPrinterErrorMessage(err);
 
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-      setPrintReport(`Reprint error: ${isExpoGo ? 'Bluetooth printing requires an Android APK.' : msg}`);
+      setPrintReport(`Reprint error: ${msg}`);
 
       Alert.alert(
         isExpoGo ? 'Saved to History' : 'Reprint Error',
