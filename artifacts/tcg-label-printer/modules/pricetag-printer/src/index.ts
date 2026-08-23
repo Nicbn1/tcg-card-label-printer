@@ -20,12 +20,20 @@ export type NativePrinterLabel = {
   lines: string[];
 };
 
+export type NativePrinterDelivery = {
+  packetCount: number;
+  acknowledgedPacketCount: number;
+  writeMode: 'acknowledged' | 'no-response-queued';
+  packetBytes: number;
+  usedFlowControl: boolean;
+};
+
 type PriceTagPrinterNativeModule = {
   getPermissionStatusAsync(): Promise<PrinterPermissionStatus>;
   requestPermissionsAsync(): Promise<PrinterPermissionStatus>;
   scanForDevicesAsync(): Promise<NativePrinterDevice[]>;
   connectAsync(address: string): Promise<NativePrinterDevice>;
-  printLabelAsync(label: NativePrinterLabel): Promise<void>;
+  printLabelAsync(label: NativePrinterLabel): Promise<NativePrinterDelivery>;
   disconnectAsync(): Promise<void>;
   getConnectionStateAsync(): Promise<NativePrinterConnection>;
 };

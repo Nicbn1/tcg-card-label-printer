@@ -46,6 +46,7 @@ export default function CardDetailScreen() {
   }>();
 
   const [printing, setPrinting] = useState(false);
+  const [reprinting, setReprinting] = useState(false);
   const [printed, setPrinted] = useState(false);
   const [printReport, setPrintReport] = useState<string | null>(null);
 
@@ -140,6 +141,50 @@ export default function CardDetailScreen() {
       );
     } finally {
       setPrinting(false);
+    }
+  };
+
+  const handleReprint = async () => {
+    if (printing || reprinting) return;
+    if (selectedCents <= 0) return;
+    setReprinting(true);
+    try {
+      await addHistoryEntry({ ...label, isReprint: true, inventoryTracked: false });
+
+      const delivery = await sendToPrinter('', label);
+
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      const deliveryDetail =
+        delivery.writeMode === 'acknowledged'
+          ? `${delivery.acknowledgedPacketCount}/${delivery.packetCount} BLE packets acknowledged`
+          : `${delivery.packetCount} packets queued without peripheral acknowledgement`;
+      const report = `${deliveryDetail}; ${delivery.packetBytes}-byte packets; ${
+        delivery.usedFlowControl ? 'FF03 buffer credits used' : 'paced fallback used'
+      }.`;
+      setPrintReport(`Reprint — BLE delivery confirmed: ${report} Physical printing still depends on printer acceptance.`);
+      Alert.alert(
+        'Reprint sent to N12',
+        `${deliveryDetail}\nPayload size: up to ${delivery.packetBytes} bytes per BLE write${
+          delivery.usedFlowControl ? '\nFF03 buffer credits used.' : '\nNo FF03 credits received; paced fallback used.'
+        }\n\nA second history entry has been recorded for this reprint.`,
+        [{ text: 'OK' }],
+      );
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const isExpoGo = msg.includes('EXPO_GO_ONLY');
+
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+      setPrintReport(`Reprint error: ${isExpoGo ? 'Bluetooth printing requires an Android APK.' : msg}`);
+
+      Alert.alert(
+        isExpoGo ? 'Saved to History' : 'Reprint Error',
+        isExpoGo
+          ? 'Reprint saved to history.\n\nTo print via the Core Tech N12, build this app as an APK.'
+          : msg,
+        [{ text: 'OK' }],
+      );
+    } finally {
+      setReprinting(false);
     }
   };
 
@@ -418,6 +463,36 @@ export default function CardDetailScreen() {
             </Text>
           </View>
         )}
+        {printed && (
+          <TouchableOpacity
+            style={[
+              styles.reprintBtn,
+              {
+                backgroundColor: reprinting ? colors.muted : colors.accent,
+                borderColor: colors.border,
+              },
+            ]}
+            onPress={handleReprint}
+            activeOpacity={0.8}
+            disabled={reprinting || printing}
+          >
+            {reprinting ? (
+              <ActivityIndicator color={colors.foreground} />
+            ) : (
+              <>
+                <Feather name="refresh-cw" size={16} color={colors.foreground} />
+                <Text
+                  style={[
+                    styles.reprintBtnText,
+                    { color: colors.foreground, fontFamily: 'Inter_500Medium' },
+                  ]}
+                >
+                  Print again
+                </Text>
+              </>
+            )}
+          </TouchableOpacity>
+        )}
       </ScrollView>
     </View>
   );
@@ -498,4 +573,15 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 19,
   },
+  reprintBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: 44,
+    borderRadius: 12,
+    borderWidth: 1,
+    gap: 8,
+    marginTop: 2,
+  },
+  reprintBtnText: { fontSize: 15 },
 });
