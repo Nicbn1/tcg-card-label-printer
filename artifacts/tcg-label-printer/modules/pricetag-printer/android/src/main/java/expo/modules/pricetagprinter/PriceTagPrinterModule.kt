@@ -56,6 +56,7 @@ class PriceTagPrinterModule : Module() {
   private var statusNotificationsEnabled = false
   private var notificationBuffer = byteArrayOf()
   private var lastD11StatusPage: Int? = null
+  private var pendingPrintError: IOException? = null
   private var connectionAttemptId = 0L
   private var reservedConnectionAttemptId: Long? = null
   private var pendingConnectionAttemptId: Long? = null
@@ -412,23 +413,31 @@ class PriceTagPrinterModule : Module() {
       }
 
       val job = createD11PrintJob(lines)
+      synchronized(stateLock) {
+        pendingPrintError = null
+        lastD11StatusPage = null
+      }
       job.frames.forEach { frame ->
         queueD11Write(frame)
+        throwIfD11PrintRejected()
         delay(PACKET_DELAY_MS)
       }
+      throwIfD11PrintRejected()
 
       val canRequestStatus = synchronized(stateLock) { statusNotificationsEnabled }
       var statusPacketsQueued = 0
       var receivedStatus = false
       var completedPageCount: Int? = null
       if (canRequestStatus) {
-        repeat(PRINT_STATUS_ATTEMPTS) {
+        for (attempt in 0 until PRINT_STATUS_ATTEMPTS) {
+          throwIfD11PrintRejected()
           statusPacketsQueued += 1
           val page = requestD11PrintStatus()
+          throwIfD11PrintRejected()
           if (page != null) {
             receivedStatus = true
             completedPageCount = page
-            if (page >= 1) return@repeat
+            if (page >= 1) break
           }
           delay(PRINT_STATUS_POLL_DELAY_MS)
         }
@@ -438,7 +447,17 @@ class PriceTagPrinterModule : Module() {
       // unavailable. The returned delivery object tells JS which confirmation
       // was available instead of mistaking a no-response write for a printer ACK.
       queueD11Write(buildD11Frame(CMD_PRINT_END, byteArrayOf(0x01)))
+      if (canRequestStatus) {
+        statusPacketsQueued += 1
+        val terminalPage = requestD11PrintStatus()
+        throwIfD11PrintRejected()
+        if (terminalPage != null) {
+          receivedStatus = true
+          completedPageCount = terminalPage
+        }
+      }
       delay(PRINT_DISPATCH_SETTLE_MS)
+      throwIfD11PrintRejected()
       return mapOf(
         "packetCount" to (job.frames.size + statusPacketsQueued + 1),
         "writeMode" to "no-response-queued",
@@ -456,7 +475,6 @@ class PriceTagPrinterModule : Module() {
     val frames = mutableListOf<ByteArray>()
     frames += buildD11Frame(CMD_SET_DENSITY, byteArrayOf(D11_DENSITY.toByte()))
     frames += buildD11Frame(CMD_SET_LABEL_TYPE, byteArrayOf(D11_LABEL_TYPE.toByte()))
-    frames += buildD11Frame(CMD_PRINT_START, byteArrayOf(0x01))
     frames += buildD11Frame(CMD_PRINT_CLEAR, byteArrayOf(0x01))
     frames += buildD11Frame(CMD_PAGE_START, byteArrayOf(0x01))
     frames += buildD11Frame(
@@ -464,6 +482,7 @@ class PriceTagPrinterModule : Module() {
       u16(bitmap.width) + u16(bitmap.height)
     )
     frames += buildD11Frame(CMD_PRINT_QUANTITY, u16(1))
+    frames += buildD11Frame(CMD_PRINT_START, byteArrayOf(0x01))
 
     for (row in 0 until bitmap.height) {
       val rowBytes = packD11BitmapRow(bitmap, row)
@@ -581,6 +600,11 @@ class PriceTagPrinterModule : Module() {
       FRAME_TAIL,
       FRAME_TAIL
     )
+  }
+
+  private fun throwIfD11PrintRejected() {
+    val error = synchronized(stateLock) { pendingPrintError }
+    if (error != null) throw error
   }
 
   @SuppressLint("MissingPermission")
@@ -839,21 +863,23 @@ class PriceTagPrinterModule : Module() {
     }
     frames.forEach { response ->
       if (response.command == RESP_PRINT_STATUS && response.data.size >= 2) {
-        val page = ((response.data[0].toInt() and 0xFF) shl 8) or
-          (response.data[1].toInt() and 0xFF)
+        val page = (response.data[0].toInt() and 0xFF) or
+          ((response.data[1].toInt() and 0xFF) shl 8)
         val continuation = synchronized(stateLock) {
           lastD11StatusPage = page
           statusContinuation.also { statusContinuation = null }
         }
         if (continuation?.isActive == true) continuation.resume(page)
       } else if (response.command == RESP_PRINT_ERROR) {
+        val error = IOException(
+          "D11_PRINT_REJECTED: The NIIMBOT D11 rejected the label setup. Check the installed tape and try again."
+        )
         val continuation = synchronized(stateLock) {
+          pendingPrintError = error
           statusContinuation.also { statusContinuation = null }
         }
         if (continuation?.isActive == true) {
-          continuation.resumeWithException(
-            IOException("D11_PRINT_REJECTED: The NIIMBOT D11 rejected the label setup. Check the installed tape and try again.")
-          )
+          continuation.resumeWithException(error)
         }
       }
     }
