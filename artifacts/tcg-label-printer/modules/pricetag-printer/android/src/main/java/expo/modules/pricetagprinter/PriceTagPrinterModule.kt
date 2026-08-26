@@ -475,6 +475,7 @@ class PriceTagPrinterModule : Module() {
     val frames = mutableListOf<ByteArray>()
     frames += buildD11Frame(CMD_SET_DENSITY, byteArrayOf(D11_DENSITY.toByte()))
     frames += buildD11Frame(CMD_SET_LABEL_TYPE, byteArrayOf(D11_LABEL_TYPE.toByte()))
+    frames += buildD11Frame(CMD_PRINT_START, byteArrayOf(0x01))
     frames += buildD11Frame(CMD_PRINT_CLEAR, byteArrayOf(0x01))
     frames += buildD11Frame(CMD_PAGE_START, byteArrayOf(0x01))
     frames += buildD11Frame(
@@ -482,7 +483,6 @@ class PriceTagPrinterModule : Module() {
       u16(bitmap.width) + u16(bitmap.height)
     )
     frames += buildD11Frame(CMD_PRINT_QUANTITY, u16(1))
-    frames += buildD11Frame(CMD_PRINT_START, byteArrayOf(0x01))
 
     for (row in 0 until bitmap.height) {
       val rowBytes = packD11BitmapRow(bitmap, row)
@@ -581,10 +581,10 @@ class PriceTagPrinterModule : Module() {
   }
 
   /**
-   * NIIMBOT V3 stores each 16-bit page dimension and row offset low-byte first.
+   * NIIMBOT V3 stores page dimensions, row offsets, and page counters high-byte first.
    */
   private fun u16(value: Int): ByteArray =
-    byteArrayOf((value and 0xFF).toByte(), ((value shr 8) and 0xFF).toByte())
+    byteArrayOf(((value shr 8) and 0xFF).toByte(), (value and 0xFF).toByte())
 
   private fun buildD11Frame(command: Int, data: ByteArray): ByteArray {
     require(data.size <= 0xFF) { "NIIMBOT D11 packet data exceeds 255 bytes." }
@@ -863,8 +863,8 @@ class PriceTagPrinterModule : Module() {
     }
     frames.forEach { response ->
       if (response.command == RESP_PRINT_STATUS && response.data.size >= 2) {
-        val page = (response.data[0].toInt() and 0xFF) or
-          ((response.data[1].toInt() and 0xFF) shl 8)
+        val page = ((response.data[0].toInt() and 0xFF) shl 8) or
+          (response.data[1].toInt() and 0xFF)
         val continuation = synchronized(stateLock) {
           lastD11StatusPage = page
           statusContinuation.also { statusContinuation = null }
