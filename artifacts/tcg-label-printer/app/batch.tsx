@@ -219,7 +219,7 @@ export default function BatchQueueScreen() {
       Alert.alert(
         savedForNativeBuild ? 'Queue Saved to History' : 'Queue Sent',
         savedForNativeBuild
-          ? `${savedForNativeBuild} labels were saved in order. Build the Android APK to send the queue to your N12 printer.`
+          ? `${savedForNativeBuild} labels were saved in order. Build the Android APK to send the queue to your NIIMBOT D11 printer.`
           : `${items.length} labels were sent to the printer in order.`,
       );
       router.replace('/');

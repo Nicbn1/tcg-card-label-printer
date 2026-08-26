@@ -1,12 +1,12 @@
 /**
- * Zhuhai Jiuyin N12 label generator + Bluetooth printer bridge.
+ * NIIMBOT D11 label generator + Bluetooth printer bridge.
  *
- * The N12 is a 12 mm thermal tape printer that connects over Bluetooth.
+ * The D11 is a 12 mm thermal tape printer that connects over Bluetooth.
  * Labels are printed landscape on 12 mm × ~50 mm tape. The print head
  * is 96 dots wide (203 DPI × 12 mm ≈ 96 dots). We format content to fit.
  *
- * Label generation works in Expo Go. The physical N12 uses its own BLE
- * raster protocol, encoded by the native Android module. Transmission requires
+ * Label generation works in Expo Go. The physical D11 uses its own Niimbot BLE
+ * packet protocol, encoded by the native Android module. Transmission requires
  * a native APK build —
  * see README.md → "Building for Android / Enabling Bluetooth".
  */
@@ -23,7 +23,7 @@ import PriceTagPrinter, {
   type PrinterPermissionStatus,
 } from '@/modules/pricetag-printer';
 
-const SAVED_PRINTER_ADDRESS_KEY = '@pricetag_n12_printer_address';
+const SAVED_PRINTER_ADDRESS_KEY = '@pricetag_d11_printer_address';
 
 export interface LabelData {
   cardName: string;
@@ -62,7 +62,7 @@ export function formatGeneratedDate(timestamp?: string): string {
 
 /**
  * Returns a plain-text representation of the label as it will appear
- * on 12 mm × ~50 mm N12 tape.
+ * on 12 mm × ~50 mm D11 tape.
  *
  * Layout (landscape, 12 mm height):
  *   Line 1 – Card name (bold, up to ~20 chars)
@@ -102,7 +102,7 @@ export function getPrintableLines(label: LabelData): string[] {
 }
 
 /**
- * Sends a label to the selected Zhuhai Jiuyin N12 printer via BLE.
+ * Sends a label to the selected NIIMBOT D11 printer via BLE.
  * The local native module is intentionally absent in Expo Go and on web,
  * where this preserves the existing history-first fallback.
  */
@@ -151,7 +151,7 @@ export async function scanForPrinters(): Promise<PrinterDevice[]> {
 export async function connectToPrinter(address?: string): Promise<PrinterDevice> {
   const targetAddress = address?.trim() || (await getSavedPrinterAddress());
   if (!targetAddress) {
-    throw new Error('PRINTER_NOT_SELECTED: Choose your nearby N12 in Settings before printing.');
+    throw new Error('PRINTER_NOT_SELECTED: Choose your nearby NIIMBOT D11 in Settings before printing.');
   }
   const device = await nativePrinter().connectAsync(targetAddress);
   await setSavedPrinterAddress(device.address);
@@ -196,12 +196,11 @@ export async function sendToPrinter(
   const printer = nativePrinter();
   const targetAddress = deviceAddress.trim() || (await getSavedPrinterAddress());
   if (!targetAddress) {
-    throw new Error('PRINTER_NOT_SELECTED: Choose your nearby N12 in Settings before printing.');
+    throw new Error('PRINTER_NOT_SELECTED: Choose your nearby NIIMBOT D11 in Settings before printing.');
   }
 
   await printer.connectAsync(targetAddress);
-  // The N12 may still be decompressing and feeding a raster after its footer
-  // reaches FF02. Keep this session alive; Forget/disconnect remains the
-  // explicit way to release the selected printer.
+  // Keep the D11 session alive while it finishes the physical feed. Forget /
+  // disconnect remains the explicit way to release the selected printer.
   return printer.printLabelAsync({ lines: getPrintableLines(label) });
 }

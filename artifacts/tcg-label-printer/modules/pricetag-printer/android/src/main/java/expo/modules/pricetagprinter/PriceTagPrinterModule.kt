@@ -36,11 +36,13 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 /**
- * BLE raster transport for the Zhuhai Jiuyin N12 (FCC ID 2BM2R-N12).
+ * BLE bitmap transport for the 203 DPI NIIMBOT D11.
  *
- * This printer does not implement Bluetooth SPP or ESC/POS. It receives
- * compressed 1-bit bitmap jobs through the Print Master/Nada-style BLE
- * service (FF00 / FF02) and may provide FF03 credit notifications.
+ * The D11 uses the Niimbot V3 packet protocol rather than ESC/POS or the
+ * PrintMaster protocol used by the former N12 printer. Jobs are encoded as
+ * framed page and 1-bit bitmap-row commands sent over a write-without-response
+ * characteristic. Printer status arrives over notifications on the same GATT
+ * characteristic when the device provides it.
  */
 class PriceTagPrinterModule : Module() {
   private val mainHandler = Handler(Looper.getMainLooper())
@@ -48,23 +50,17 @@ class PriceTagPrinterModule : Module() {
   private val printMutex = Mutex()
 
   private var gatt: BluetoothGatt? = null
-  private var writeCharacteristic: BluetoothGattCharacteristic? = null
-  private var flowCharacteristic: BluetoothGattCharacteristic? = null
+  private var printerCharacteristic: BluetoothGattCharacteristic? = null
   private var connectedAddress: String? = null
-  private var writesWithoutResponse = false
-  private var flowControlEnabled = false
-  private var flowControlSetupPending = false
-  private var flowControlSetupExpired = false
-  private var firstFlowCreditPending = false
-  private var availableFlowCredits = FALLBACK_FLOW_CREDITS
+  private var negotiatedMtu = DEFAULT_ATT_MTU
+  private var statusNotificationsEnabled = false
+  private var notificationBuffer = byteArrayOf()
+  private var lastD11StatusPage: Int? = null
   private var connectionAttemptId = 0L
   private var reservedConnectionAttemptId: Long? = null
   private var pendingConnectionAttemptId: Long? = null
   private var connectionContinuation: CancellableContinuation<Map<String, String>>? = null
-  private var writeContinuation: CancellableContinuation<Unit>? = null
-  private var flowCreditContinuation: CancellableContinuation<Unit>? = null
-  private var writeAttemptId = 0L
-  private var pendingWriteAttemptId: Long? = null
+  private var statusContinuation: CancellableContinuation<Int>? = null
 
   override fun definition() = ModuleDefinition {
     Name("PriceTagPrinter")
@@ -97,16 +93,14 @@ class PriceTagPrinterModule : Module() {
 
     AsyncFunction("disconnectAsync").SuspendBody<Unit> {
       withContext(Dispatchers.IO) {
-        closeConnection(
-          IOException("N12_CONNECTION_CANCELLED: The N12 connection was cancelled before it finished.")
-        )
+        closeConnection(IOException("D11_CONNECTION_CANCELLED: The NIIMBOT D11 connection was cancelled."))
       }
     }
 
     AsyncFunction("getConnectionStateAsync") {
       synchronized(stateLock) {
         mapOf(
-          "connected" to (gatt != null && writeCharacteristic != null),
+          "connected" to (gatt != null && printerCharacteristic != null),
           "address" to connectedAddress
         )
       }
@@ -144,24 +138,19 @@ class PriceTagPrinterModule : Module() {
     if (permissions.isEmpty() || getPermissionStatus()["granted"] == true) {
       return getPermissionStatus()
     }
-
     val manager = appContext.permissions
       ?: throw IllegalStateException("BLUETOOTH_PERMISSION_UNAVAILABLE: Permission service is unavailable.")
-
     return suspendCancellableCoroutine { continuation ->
-      val listener = PermissionsResponseListener {
-        if (continuation.isActive) {
-          continuation.resume(getPermissionStatus())
-        }
-      }
-      manager.askForPermissions(listener, *permissions)
+      manager.askForPermissions(PermissionsResponseListener {
+        if (continuation.isActive) continuation.resume(getPermissionStatus())
+      }, *permissions)
     }
   }
 
   private fun requireBluetoothPermission() {
     if (getPermissionStatus()["granted"] != true) {
       throw IllegalStateException(
-        "BLUETOOTH_PERMISSION_REQUIRED: Allow Nearby devices access to find and connect to the N12."
+        "BLUETOOTH_PERMISSION_REQUIRED: Allow Nearby devices access to find and connect to the NIIMBOT D11."
       )
     }
   }
@@ -181,11 +170,11 @@ class PriceTagPrinterModule : Module() {
   private suspend fun scanForDevices(): List<Map<String, String>> {
     val adapter = bluetoothAdapter()
     val scanner = adapter.bluetoothLeScanner
-      ?: throw IllegalStateException("BLE_UNAVAILABLE: This Android device cannot scan for the N12.")
+      ?: throw IllegalStateException("BLE_UNAVAILABLE: This Android device cannot scan for the NIIMBOT D11.")
     val devices = Collections.synchronizedMap(linkedMapOf<String, Map<String, String>>())
 
-    // Some N12 firmware stops advertising while it is paired. Including bonded
-    // devices lets a user reconnect without first removing the pairing in Android.
+    // The D11 may stop advertising after Android pairs with it. Include bonded
+    // devices so that selecting it again does not require removing the pairing.
     adapter.bondedDevices.forEach { device ->
       devices[device.address] = deviceToMap(device)
     }
@@ -193,16 +182,14 @@ class PriceTagPrinterModule : Module() {
     return suspendCancellableCoroutine { continuation ->
       val callback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
-          val device = result.device ?: return
-          val details = deviceToMap(device)
-          devices[device.address] = details
+          result.device?.let { device -> devices[device.address] = deviceToMap(device) }
         }
 
         override fun onScanFailed(errorCode: Int) {
           if (continuation.isActive) {
             continuation.resumeWithException(
               IllegalStateException(
-                "N12_SCAN_FAILED: Android could not scan for nearby printers (error $errorCode)."
+                "D11_SCAN_FAILED: Android could not scan for nearby printers (error $errorCode)."
               )
             )
           }
@@ -213,7 +200,10 @@ class PriceTagPrinterModule : Module() {
         scanner.startScan(callback)
       } catch (error: SecurityException) {
         continuation.resumeWithException(
-          IllegalStateException("BLUETOOTH_PERMISSION_REQUIRED: Allow Nearby devices access to find the N12.", error)
+          IllegalStateException(
+            "BLUETOOTH_PERMISSION_REQUIRED: Allow Nearby devices access to find the NIIMBOT D11.",
+            error
+          )
         )
         return@suspendCancellableCoroutine
       }
@@ -222,16 +212,17 @@ class PriceTagPrinterModule : Module() {
         try {
           scanner.stopScan(callback)
         } catch (_: SecurityException) {
-          // Permission failures are reported before a scan begins.
+          // The permission error is surfaced when a scan is started.
         }
         if (continuation.isActive) {
           val discovered = synchronized(devices) {
-            devices.values
-              .sortedWith(
-                compareByDescending<Map<String, String>> { device ->
-                  device["name"]?.contains("n12", ignoreCase = true) == true
-                }.thenBy { device -> device["name"]?.lowercase() ?: "" }
-              )
+            devices.values.sortedWith(
+              compareByDescending<Map<String, String>> { device ->
+                device["name"]?.startsWith("D11", ignoreCase = true) == true
+              }.thenByDescending { device ->
+                device["name"]?.startsWith("D1", ignoreCase = true) == true
+              }.thenBy { device -> device["name"]?.lowercase() ?: "" }
+            )
           }
           continuation.resume(discovered)
         }
@@ -242,7 +233,7 @@ class PriceTagPrinterModule : Module() {
         try {
           scanner.stopScan(callback)
         } catch (_: SecurityException) {
-          // Nothing else to clean up.
+          // Nothing else to release.
         }
       }
     }
@@ -259,33 +250,39 @@ class PriceTagPrinterModule : Module() {
   private suspend fun connect(address: String): Map<String, String> {
     val normalizedAddress = address.trim().uppercase()
     if (normalizedAddress.isBlank()) {
-      throw IllegalArgumentException("PRINTER_ADDRESS_REQUIRED: Choose your nearby N12 in Settings before printing.")
+      throw IllegalArgumentException(
+        "PRINTER_ADDRESS_REQUIRED: Choose your nearby NIIMBOT D11 in Settings before printing."
+      )
     }
 
-    // Detect a stale GATT that Android has not cleaned up yet. The N12 can
-    // go to sleep without sending a BLE disconnect, leaving our gatt field
-    // non-null while the radio link is dead. Check with BluetoothManager
-    // before the lock so we don't hold stateLock across a system API call.
+    // Android can retain a GATT object after a sleeping printer drops its radio
+    // link. Verify the system state before treating the existing session as live.
     val looksConnected = synchronized(stateLock) {
-      gatt != null && writeCharacteristic != null && connectedAddress == normalizedAddress
+      gatt != null && printerCharacteristic != null && connectedAddress == normalizedAddress
     }
     if (looksConnected) {
-      val mgr = appContext.reactContext?.applicationContext
+      val manager = appContext.reactContext?.applicationContext
         ?.getSystemService(android.content.Context.BLUETOOTH_SERVICE) as? android.bluetooth.BluetoothManager
-      val dev = try { BluetoothAdapter.getDefaultAdapter()?.getRemoteDevice(normalizedAddress) } catch (_: Throwable) { null }
-      val actuallyConnected = dev != null &&
-        mgr?.getConnectionState(dev, BluetoothProfile.GATT) == BluetoothProfile.STATE_CONNECTED
-      if (!actuallyConnected) {
-        closeConnection(IOException("N12_DISCONNECTED: The N12 disconnected. Wake it and reconnect before printing."))
+      val device = try {
+        BluetoothAdapter.getDefaultAdapter()?.getRemoteDevice(normalizedAddress)
+      } catch (_: Throwable) {
+        null
       }
+      val actuallyConnected = device != null &&
+        manager?.getConnectionState(device, BluetoothProfile.GATT) == BluetoothProfile.STATE_CONNECTED
+      if (actuallyConnected) {
+        return mapOf("name" to "NIIMBOT D11", "address" to normalizedAddress)
+      }
+      closeConnection(
+        IOException("D11_DISCONNECTED: The NIIMBOT D11 disconnected. Wake it and reconnect before printing.")
+      )
     }
 
     val connectionAttempt = synchronized(stateLock) {
       if (reservedConnectionAttemptId != null || connectionContinuation != null) {
-        throw IllegalStateException("N12_CONNECTION_IN_PROGRESS: Wait for the current N12 connection attempt to finish.")
-      }
-      if (gatt != null && writeCharacteristic != null && connectedAddress == normalizedAddress) {
-        return mapOf("name" to "N12 label printer", "address" to normalizedAddress)
+        throw IllegalStateException(
+          "D11_CONNECTION_IN_PROGRESS: Wait for the current NIIMBOT D11 connection attempt to finish."
+        )
       }
       connectionAttemptId += 1
       reservedConnectionAttemptId = connectionAttemptId
@@ -302,164 +299,211 @@ class PriceTagPrinterModule : Module() {
       adapter.getRemoteDevice(normalizedAddress)
     } catch (error: IllegalArgumentException) {
       releaseConnectionReservation(connectionAttempt.first)
-      throw IllegalArgumentException("N12_ADDRESS_INVALID: Select the N12 from the nearby-printer list.", error)
+      throw IllegalArgumentException(
+        "D11_ADDRESS_INVALID: Select the NIIMBOT D11 from the nearby-printer list.",
+        error
+      )
     }
 
     if (connectionAttempt.second) {
-      // A short gap after closing a stale GATT prevents common Android 133
-      // reconnect failures on printers that do not release the radio instantly.
       closeConnection(
-        IOException("N12_CONNECTION_REPLACED: The previous N12 connection was closed to start a new one."),
+        IOException("D11_CONNECTION_REPLACED: The previous printer connection was closed to start a new one."),
         preserveConnectionReservation = true
       )
       delay(GATT_RECONNECT_DELAY_MS)
     }
+
     val connection = withTimeoutOrNull(CONNECTION_TIMEOUT_MS) {
       suspendCancellableCoroutine { continuation ->
-      val attemptId = connectionAttempt.first
-      val registered = synchronized(stateLock) {
-        if (reservedConnectionAttemptId != attemptId) {
-          false
-        } else {
-          pendingConnectionAttemptId = attemptId
-          connectionContinuation = continuation
-          connectedAddress = normalizedAddress
-          true
+        val attemptId = connectionAttempt.first
+        val registered = synchronized(stateLock) {
+          if (reservedConnectionAttemptId != attemptId) {
+            false
+          } else {
+            pendingConnectionAttemptId = attemptId
+            connectionContinuation = continuation
+            connectedAddress = normalizedAddress
+            true
+          }
         }
-      }
-      if (!registered) {
-        continuation.resumeWithException(
-          IOException("N12_CONNECTION_CANCELLED: The N12 connection attempt was cancelled.")
-        )
-        return@suspendCancellableCoroutine
-      }
-      val context = appContext.reactContext?.applicationContext
-        ?: run {
-          clearConnectionAttempt(continuation, attemptId)
+        if (!registered) {
           continuation.resumeWithException(
-            IllegalStateException("N12_CONNECTION_UNAVAILABLE: Android could not create a Bluetooth connection.")
+            IOException("D11_CONNECTION_CANCELLED: The NIIMBOT D11 connection attempt was cancelled.")
           )
           return@suspendCancellableCoroutine
         }
-
-      val createdGatt = try {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-          device.connectGatt(context, false, createGattCallback(attemptId), BluetoothDevice.TRANSPORT_LE)
-        } else {
-          device.connectGatt(context, false, createGattCallback(attemptId))
+        val context = appContext.reactContext?.applicationContext
+        if (context == null) {
+          clearConnectionAttempt(continuation, attemptId)
+          continuation.resumeWithException(
+            IllegalStateException("D11_CONNECTION_UNAVAILABLE: Android could not create a Bluetooth connection.")
+          )
+          return@suspendCancellableCoroutine
         }
-      } catch (error: SecurityException) {
-        clearConnectionAttempt(continuation, attemptId)
-        continuation.resumeWithException(
-          IllegalStateException("BLUETOOTH_PERMISSION_REQUIRED: Allow Nearby devices access to connect to the N12.", error)
-        )
-        return@suspendCancellableCoroutine
-      }
-
-      if (createdGatt == null) {
-        clearConnectionAttempt(continuation, attemptId)
-        continuation.resumeWithException(
-          IOException("N12_CONNECTION_FAILED: Android could not open a BLE connection to the selected printer.")
-        )
-      } else {
-        val shouldCloseCreatedGatt = synchronized(stateLock) {
-          if (pendingConnectionAttemptId == attemptId && gatt == null) {
-            gatt = createdGatt
-            false
+        val createdGatt = try {
+          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            device.connectGatt(context, false, createGattCallback(attemptId), BluetoothDevice.TRANSPORT_LE)
           } else {
-            gatt !== createdGatt
+            device.connectGatt(context, false, createGattCallback(attemptId))
+          }
+        } catch (error: SecurityException) {
+          clearConnectionAttempt(continuation, attemptId)
+          continuation.resumeWithException(
+            IllegalStateException(
+              "BLUETOOTH_PERMISSION_REQUIRED: Allow Nearby devices access to connect to the NIIMBOT D11.",
+              error
+            )
+          )
+          return@suspendCancellableCoroutine
+        }
+        if (createdGatt == null) {
+          clearConnectionAttempt(continuation, attemptId)
+          continuation.resumeWithException(
+            IOException("D11_CONNECTION_FAILED: Android could not open a Bluetooth connection to the selected printer.")
+          )
+        } else {
+          val shouldClose = synchronized(stateLock) {
+            if (pendingConnectionAttemptId == attemptId && gatt == null) {
+              gatt = createdGatt
+              false
+            } else {
+              gatt !== createdGatt
+            }
+          }
+          if (shouldClose) {
+            try {
+              createdGatt.disconnect()
+              createdGatt.close()
+            } catch (_: SecurityException) {
+              // This attempt is already being cleaned up.
+            }
           }
         }
-        if (shouldCloseCreatedGatt) {
-          try {
-            createdGatt.disconnect()
-            createdGatt.close()
-          } catch (_: SecurityException) {
-            // The connection attempt is already being released.
-          }
-        }
-      }
-
-      continuation.invokeOnCancellation {
-        closeConnection()
-      }
+        continuation.invokeOnCancellation { closeConnection() }
       }
     }
     return connection ?: run {
       closeConnection()
-      throw IOException("N12_CONNECTION_TIMED_OUT: The N12 did not finish connecting. Wake it and try again.")
+      throw IOException(
+        "D11_CONNECTION_TIMED_OUT: The NIIMBOT D11 did not finish connecting. Wake it and try again."
+      )
     }
   }
 
   private suspend fun printLabel(payload: Map<String, Any?>): Map<String, Any?> {
     if (!printMutex.tryLock()) {
-      throw IllegalStateException("N12_PRINT_IN_PROGRESS: Wait for the current N12 label to finish before sending another.")
+      throw IllegalStateException(
+        "D11_PRINT_IN_PROGRESS: Wait for the current NIIMBOT D11 label to finish before sending another."
+      )
     }
     try {
       val lines = (payload["lines"] as? List<*>)
-        ?.mapNotNull { value -> value as? String }
-        ?.filter { line -> line.isNotBlank() }
+        ?.mapNotNull { it as? String }
+        ?.filter { it.isNotBlank() }
         ?: emptyList()
       if (lines.isEmpty()) {
-        throw IllegalArgumentException("N12_LABEL_EMPTY: This label has no printable fields.")
+        throw IllegalArgumentException("D11_LABEL_EMPTY: This label has no printable fields.")
       }
-      val hasConnection = synchronized(stateLock) { gatt != null && writeCharacteristic != null }
+      val hasConnection = synchronized(stateLock) { gatt != null && printerCharacteristic != null }
       if (!hasConnection) {
-        throw IllegalStateException("PRINTER_NOT_CONNECTED: Select and connect your N12 before printing.")
+        throw IllegalStateException(
+          "PRINTER_NOT_CONNECTED: Select and connect your NIIMBOT D11 before printing."
+        )
       }
-      val job = createN12PrintJob(lines)
-      val rasterDelivery = sendPayload(job.headerAndImage)
-      // The printer needs time to decompress and stage the raster before it
-      // receives the stop/feed footer. Sending both phases back-to-back can
-      // look successful at the BLE layer while the N12 silently drops the job.
-      delay(PRINT_RASTER_PROCESSING_DELAY_MS)
-      val footerDelivery = sendPayload(job.footer)
-      // Keep the GATT link up while the printer starts the physical feed.
+
+      val job = createD11PrintJob(lines)
+      job.frames.forEach { frame ->
+        queueD11Write(frame)
+        delay(PACKET_DELAY_MS)
+      }
+
+      val canRequestStatus = synchronized(stateLock) { statusNotificationsEnabled }
+      var statusPacketsQueued = 0
+      var receivedStatus = false
+      var completedPageCount: Int? = null
+      if (canRequestStatus) {
+        repeat(PRINT_STATUS_ATTEMPTS) {
+          statusPacketsQueued += 1
+          val page = requestD11PrintStatus()
+          if (page != null) {
+            receivedStatus = true
+            completedPageCount = page
+            if (page >= 1) return@repeat
+          }
+          delay(PRINT_STATUS_POLL_DELAY_MS)
+        }
+      }
+
+      // The D11 task is explicitly closed even when status notifications are
+      // unavailable. The returned delivery object tells JS which confirmation
+      // was available instead of mistaking a no-response write for a printer ACK.
+      queueD11Write(buildD11Frame(CMD_PRINT_END, byteArrayOf(0x01)))
       delay(PRINT_DISPATCH_SETTLE_MS)
-      val result = combineDeliveryResults(rasterDelivery, footerDelivery)
       return mapOf(
-        "packetCount" to result.packetCount,
-        "acknowledgedPacketCount" to result.acknowledgedPacketCount,
-        "writeMode" to result.writeMode,
-        "packetBytes" to result.packetBytes,
-        "usedFlowControl" to result.usedFlowControl
+        "packetCount" to (job.frames.size + statusPacketsQueued + 1),
+        "writeMode" to "no-response-queued",
+        "packetBytes" to job.maxFrameBytes,
+        "statusReceived" to receivedStatus,
+        "completedPageCount" to completedPageCount
       )
     } finally {
       printMutex.unlock()
     }
   }
 
-  private fun createN12PrintJob(lines: List<String>): N12PrintJob {
+  private fun createD11PrintJob(lines: List<String>): D11PrintJob {
     val bitmap = renderLabel(lines)
-    val imagePayload = createImageCommand(bitmap)
-    val headerAndImage = ByteArrayOutputStream().apply {
-      // 0x80: media/gap type — 0x00 = gap/continuous sensing.
-      write(byteArrayOf(0x1F, 0x80.toByte(), 0x01, 0x00))
-      // 0x70: print density 0–15. 0x0B (11) = medium-dark.
-      write(byteArrayOf(0x1F, 0x70, 0x01, 0x0B))
-      // Image raster follows immediately after setup bytes.
-      write(imagePayload)
-    }.toByteArray()
-    val footer = ByteArrayOutputStream().apply {
-      // 0x1F 0x1B 0x50 = DLE ESC 'P': print-and-feed trigger.
-      // Sent after the raster processing delay so the N12 has staged
-      // the full decompressed image before the feed command arrives.
-      write(byteArrayOf(0x1F, 0x1B, 0x50))
-    }.toByteArray()
-    return N12PrintJob(headerAndImage, footer)
+    val frames = mutableListOf<ByteArray>()
+    frames += buildD11Frame(CMD_SET_DENSITY, byteArrayOf(D11_DENSITY.toByte()))
+    frames += buildD11Frame(CMD_SET_LABEL_TYPE, byteArrayOf(D11_LABEL_TYPE.toByte()))
+    frames += buildD11Frame(CMD_PRINT_START, byteArrayOf(0x01))
+    frames += buildD11Frame(CMD_PRINT_CLEAR, byteArrayOf(0x01))
+    frames += buildD11Frame(CMD_PAGE_START, byteArrayOf(0x01))
+    frames += buildD11Frame(
+      CMD_SET_PAGE_SIZE,
+      u16(bitmap.width) + u16(bitmap.height)
+    )
+    frames += buildD11Frame(CMD_PRINT_QUANTITY, u16(1))
+
+    for (row in 0 until bitmap.height) {
+      val rowBytes = packD11BitmapRow(bitmap, row)
+      if (rowBytes.all { it.toInt() == 0 }) {
+        frames += buildD11Frame(CMD_PRINT_EMPTY_ROW, u16(row) + byteArrayOf(0x01))
+      } else {
+        val counts = ByteArray(3) { group ->
+          val start = group * 4
+          var count = 0
+          for (index in start until start + 4) {
+            count += Integer.bitCount(rowBytes[index].toInt() and 0xFF)
+          }
+          count.toByte()
+        }
+        frames += buildD11Frame(
+          CMD_PRINT_BITMAP_ROW,
+          u16(row) + counts + byteArrayOf(0x01) + rowBytes
+        )
+      }
+    }
+    frames += buildD11Frame(CMD_PAGE_END, byteArrayOf(0x01))
+    return D11PrintJob(frames, frames.maxOf { it.size })
   }
 
   private fun renderLabel(lines: List<String>): Bitmap {
     val firstLineHeight = 16
     val standardLineHeight = 13
-    val height = maxOf(MIN_LABEL_HEIGHT, LABEL_PADDING_Y * 2 + firstLineHeight + (lines.drop(1).size * standardLineHeight))
+    val height = maxOf(
+      MIN_LABEL_HEIGHT,
+      LABEL_PADDING_Y * 2 + firstLineHeight + (lines.drop(1).size * standardLineHeight)
+    )
     val bitmap = Bitmap.createBitmap(LABEL_WIDTH_DOTS, height, Bitmap.Config.ARGB_8888)
     val canvas = Canvas(bitmap)
     canvas.drawColor(Color.WHITE)
-
     val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
       color = Color.BLACK
-      typeface = android.graphics.Typeface.create(android.graphics.Typeface.MONOSPACE, android.graphics.Typeface.NORMAL)
+      typeface = android.graphics.Typeface.create(
+        android.graphics.Typeface.MONOSPACE,
+        android.graphics.Typeface.NORMAL
+      )
     }
     val maxWidth = LABEL_WIDTH_DOTS - (LABEL_PADDING_X * 2)
     var baseline = LABEL_PADDING_Y + 12
@@ -469,7 +513,12 @@ class PriceTagPrinterModule : Module() {
         android.graphics.Typeface.MONOSPACE,
         if (index == 0) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL
       )
-      canvas.drawText(ellipsizeLine(line, paint, maxWidth), LABEL_PADDING_X.toFloat(), baseline.toFloat(), paint)
+      canvas.drawText(
+        ellipsizeLine(line, paint, maxWidth),
+        LABEL_PADDING_X.toFloat(),
+        baseline.toFloat(),
+        paint
+      )
       baseline += if (index == 0) firstLineHeight else standardLineHeight
     }
     return bitmap
@@ -490,374 +539,215 @@ class PriceTagPrinterModule : Module() {
     return if (count < line.length) line.substring(0, count).trimEnd() + "…" else line
   }
 
-  private fun createImageCommand(bitmap: Bitmap): ByteArray {
-    val bytesPerRow = (bitmap.width + 7) / 8
-    val raster = ByteArray(bytesPerRow * bitmap.height)
-    for (y in 0 until bitmap.height) {
-      for (byteIndex in 0 until bytesPerRow) {
-        var packed = 0
-        for (bit in 0 until 8) {
-          val x = (byteIndex * 8) + bit
-          if (x < bitmap.width) {
-            val color = bitmap.getPixel(x, y)
-            val luminance = ((Color.red(color) * 299) + (Color.green(color) * 587) + (Color.blue(color) * 114)) / 1000
-            if (luminance < 128) packed = packed or (0x80 shr bit)
-          }
-        }
-        raster[(y * bytesPerRow) + byteIndex] = packed.toByte()
+  /**
+   * D11 bitmap rows are 96 dots / 12 bytes. A one represents a dark thermal
+   * pixel, with the most-significant bit printed first in each byte.
+   */
+  private fun packD11BitmapRow(bitmap: Bitmap, row: Int): ByteArray {
+    val bytes = ByteArray(LABEL_WIDTH_DOTS / 8)
+    for (byteIndex in bytes.indices) {
+      var packed = 0
+      for (bit in 0 until 8) {
+        val color = bitmap.getPixel((byteIndex * 8) + bit, row)
+        val luminance = (
+          Color.red(color) * 299 +
+            Color.green(color) * 587 +
+            Color.blue(color) * 114
+          ) / 1000
+        if (luminance < 128) packed = packed or (0x80 shr bit)
       }
+      bytes[byteIndex] = packed.toByte()
     }
-
-    val compressed = createN12ZlibStream(raster)
-    return ByteArrayOutputStream().apply {
-      // 0x1F 0x10 + byte width + height + compressed-length, all big-endian.
-      write(0x1F)
-      write(0x10)
-      write((bytesPerRow shr 8) and 0xFF)
-      write(bytesPerRow and 0xFF)
-      write((bitmap.height shr 8) and 0xFF)
-      write(bitmap.height and 0xFF)
-      write((compressed.size shr 24) and 0xFF)
-      write((compressed.size shr 16) and 0xFF)
-      write((compressed.size shr 8) and 0xFF)
-      write(compressed.size and 0xFF)
-      write(compressed)
-    }.toByteArray()
+    return bytes
   }
 
   /**
-   * The N12 accepts a ZLIB stream with a 1 KB window. A stored-deflate stream
-   * has no back references, so splitting it into 1 KB blocks is both portable
-   * and compatible with the printer's small decompressor.
+   * NIIMBOT V3 stores each 16-bit page dimension and row offset low-byte first.
    */
-  private fun createN12ZlibStream(raster: ByteArray): ByteArray {
-    return ByteArrayOutputStream().apply {
-      write(0x28) // Deflate + 1 KB window.
-      write(0x15) // Valid zlib flags for the 0x28 header.
-      var offset = 0
-      while (offset < raster.size) {
-        val length = minOf(ZLIB_BLOCK_SIZE, raster.size - offset)
-        val finalBlock = offset + length >= raster.size
-        write(if (finalBlock) 0x01 else 0x00)
-        write(length and 0xFF)
-        write((length shr 8) and 0xFF)
-        val inverse = length.inv() and 0xFFFF
-        write(inverse and 0xFF)
-        write((inverse shr 8) and 0xFF)
-        write(raster, offset, length)
-        offset += length
-      }
-      val checksum = adler32(raster)
-      write((checksum shr 24) and 0xFF)
-      write((checksum shr 16) and 0xFF)
-      write((checksum shr 8) and 0xFF)
-      write(checksum and 0xFF)
-    }.toByteArray()
-  }
+  private fun u16(value: Int): ByteArray =
+    byteArrayOf((value and 0xFF).toByte(), ((value shr 8) and 0xFF).toByte())
 
-  private fun adler32(data: ByteArray): Int {
-    var s1 = 1
-    var s2 = 0
-    data.forEach { byte ->
-      s1 = (s1 + (byte.toInt() and 0xFF)) % 65521
-      s2 = (s2 + s1) % 65521
-    }
-    return (s2 shl 16) or s1
-  }
-
-  private suspend fun sendPayload(payload: ByteArray): PrintDeliveryResult {
-    var offset = 0
-    var packetCount = 0
-    var acknowledgedPacketCount = 0
-    var usedFlowControl = false
-    var largestPacketBytes = DEFAULT_PACKET_BYTES
-    var writeMode = "acknowledged"
-    while (offset < payload.size) {
-      val end = minOf(offset + DEFAULT_PACKET_BYTES, payload.size)
-      usedFlowControl = consumeFlowCredit() || usedFlowControl
-      val packet = payload.copyOfRange(offset, end)
-      // Retry once if the BLE queue briefly rejects the packet. This handles
-      // the case where Android has not yet cleared the queue from the previous
-      // acknowledged write even though the callback arrived.
-      val acknowledged = try {
-        writePacket(packet)
-      } catch (firstError: IOException) {
-        if (!firstError.message.orEmpty().startsWith("N12_WRITE_FAILED")) throw firstError
-        delay(PACKET_RETRY_DELAY_MS)
-        writePacket(packet)
-      }
-      offset = end
-      packetCount += 1
-      if (acknowledged) {
-        acknowledgedPacketCount += 1
-      } else {
-        writeMode = "no-response-queued"
-      }
-      delay(PACKET_DELAY_MS)
-    }
-    return PrintDeliveryResult(
-      packetCount = packetCount,
-      acknowledgedPacketCount = acknowledgedPacketCount,
-      writeMode = writeMode,
-      packetBytes = largestPacketBytes,
-      usedFlowControl = usedFlowControl
+  private fun buildD11Frame(command: Int, data: ByteArray): ByteArray {
+    require(data.size <= 0xFF) { "NIIMBOT D11 packet data exceeds 255 bytes." }
+    var checksum = command xor data.size
+    data.forEach { byte -> checksum = checksum xor (byte.toInt() and 0xFF) }
+    return byteArrayOf(
+      FRAME_HEAD,
+      FRAME_HEAD,
+      command.toByte(),
+      data.size.toByte()
+    ) + data + byteArrayOf(
+      checksum.toByte(),
+      FRAME_TAIL,
+      FRAME_TAIL
     )
-  }
-
-  private fun combineDeliveryResults(
-    rasterDelivery: PrintDeliveryResult,
-    footerDelivery: PrintDeliveryResult
-  ): PrintDeliveryResult {
-    return PrintDeliveryResult(
-      packetCount = rasterDelivery.packetCount + footerDelivery.packetCount,
-      acknowledgedPacketCount = rasterDelivery.acknowledgedPacketCount + footerDelivery.acknowledgedPacketCount,
-      writeMode = if (
-        rasterDelivery.writeMode == "no-response-queued" ||
-        footerDelivery.writeMode == "no-response-queued"
-      ) {
-        "no-response-queued"
-      } else {
-        "acknowledged"
-      },
-      packetBytes = maxOf(rasterDelivery.packetBytes, footerDelivery.packetBytes),
-      usedFlowControl = rasterDelivery.usedFlowControl || footerDelivery.usedFlowControl
-    )
-  }
-
-  private suspend fun consumeFlowCredit(): Boolean {
-    var activeGatt: BluetoothGatt? = null
-    val availableCredit = synchronized(stateLock) {
-      activeGatt = gatt
-      if (!flowControlEnabled) {
-        false
-      } else if (availableFlowCredits > 0) {
-        availableFlowCredits -= 1
-        true
-      } else {
-        null
-      }
-    }
-    if (availableCredit != null) return availableCredit
-
-    val receivedCredit = withTimeoutOrNull(FLOW_CREDIT_TIMEOUT_MS) {
-      suspendCancellableCoroutine<Unit> { continuation ->
-        val canSend = synchronized(stateLock) {
-          when {
-            !flowControlEnabled -> true
-            availableFlowCredits > 0 -> {
-              availableFlowCredits -= 1
-              true
-            }
-            else -> {
-              flowCreditContinuation = continuation
-              false
-            }
-          }
-        }
-        if (canSend) {
-          continuation.resume(Unit)
-        }
-        continuation.invokeOnCancellation {
-          synchronized(stateLock) {
-            if (flowCreditContinuation === continuation) {
-              flowCreditContinuation = null
-            }
-          }
-        }
-      }
-    }
-
-    if (receivedCredit == null) {
-      val canFallBack = synchronized(stateLock) {
-        if (flowControlEnabled && firstFlowCreditPending) {
-          // A subscribed FF03 characteristic did not send its initial grant.
-          // Treat it as an optional feature for this connection rather than
-          // making the first print wait forever.
-          flowControlEnabled = false
-          firstFlowCreditPending = false
-          availableFlowCredits = FALLBACK_FLOW_CREDITS
-          flowCreditContinuation = null
-          true
-        } else {
-          false
-        }
-      }
-      if (!canFallBack) {
-        val error = IOException(
-          "N12_FLOW_CONTROL_TIMED_OUT: The N12 stopped granting print-buffer credits. Reconnect and try again."
-        )
-        activeGatt?.let { closeConnection(it, error) }
-        throw error
-      }
-      return false
-    }
-    return true
   }
 
   @SuppressLint("MissingPermission")
-  private suspend fun writePacket(packet: ByteArray): Boolean {
+  private fun queueD11Write(frame: ByteArray) {
     val activeGatt: BluetoothGatt
     val characteristic: BluetoothGattCharacteristic
-    val writeWithoutResponse: Boolean
+    val mtu: Int
     synchronized(stateLock) {
-      activeGatt = gatt ?: throw IllegalStateException("PRINTER_NOT_CONNECTED: Reconnect your N12 before printing.")
-      characteristic = writeCharacteristic
-        ?: throw IllegalStateException("N12_PROTOCOL_UNAVAILABLE: The selected device is not exposing the N12 print service.")
-      writeWithoutResponse = writesWithoutResponse
+      activeGatt = gatt ?: throw IllegalStateException(
+        "PRINTER_NOT_CONNECTED: Reconnect your NIIMBOT D11 before printing."
+      )
+      characteristic = printerCharacteristic ?: throw IllegalStateException(
+        "D11_PROTOCOL_UNAVAILABLE: The selected device is not exposing the NIIMBOT D11 print service."
+      )
+      mtu = negotiatedMtu
     }
-
-    characteristic.writeType =
-      if (writeWithoutResponse) {
-        BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-      } else {
-        BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-      }
-    characteristic.value = packet
-
-    if (writeWithoutResponse) {
-      // Android does not reliably invoke onCharacteristicWrite for
-      // WRITE_TYPE_NO_RESPONSE. The paced send loop is the acknowledgement
-      // mechanism in this mode, so waiting for that callback causes false
-      // connection/printing timeouts.
-      val queued = try {
-        @Suppress("DEPRECATION")
-        activeGatt.writeCharacteristic(characteristic)
-      } catch (error: SecurityException) {
-        throw IllegalStateException(
-          "BLUETOOTH_PERMISSION_REQUIRED: Allow Nearby devices access to keep printing to the N12.",
-          error
-        )
-      }
-      if (!queued) {
-        throw IOException("N12_WRITE_FAILED: The printer did not accept a label packet. Keep it powered on and try again.")
-      }
-      return false
+    if (frame.size > mtu - ATT_PROTOCOL_OVERHEAD) {
+      throw IOException(
+        "D11_MTU_TOO_SMALL: The NIIMBOT D11 connection cannot send a complete label row. Reconnect and try again."
+      )
     }
+    characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+    characteristic.value = frame
+    val queued = try {
+      @Suppress("DEPRECATION")
+      activeGatt.writeCharacteristic(characteristic)
+    } catch (error: SecurityException) {
+      throw IllegalStateException(
+        "BLUETOOTH_PERMISSION_REQUIRED: Allow Nearby devices access to keep printing to the NIIMBOT D11.",
+        error
+      )
+    }
+    if (!queued) {
+      throw IOException(
+        "D11_WRITE_FAILED: The NIIMBOT D11 did not accept a label packet. Keep it awake and reconnect."
+      )
+    }
+  }
 
-    val writeCompleted = withTimeoutOrNull(PACKET_WRITE_TIMEOUT_MS) {
-      suspendCancellableCoroutine<Unit> { continuation ->
-        val attemptId = synchronized(stateLock) {
-          writeAttemptId += 1
-          pendingWriteAttemptId = writeAttemptId
-          writeContinuation = continuation
-          writeAttemptId
-        }
-       val queued = try {
-         @Suppress("DEPRECATION")
-         activeGatt.writeCharacteristic(characteristic)
-       } catch (error: SecurityException) {
-         synchronized(stateLock) {
-            if (writeContinuation === continuation && pendingWriteAttemptId == attemptId) {
-              writeContinuation = null
-              pendingWriteAttemptId = null
-            }
-         }
-         continuation.resumeWithException(
-           IllegalStateException(
-             "BLUETOOTH_PERMISSION_REQUIRED: Allow Nearby devices access to keep printing to the N12.",
-             error
-           )
-         )
-         return@suspendCancellableCoroutine
-       }
-        if (!queued) {
-          synchronized(stateLock) {
-            if (writeContinuation === continuation && pendingWriteAttemptId == attemptId) {
-              writeContinuation = null
-              pendingWriteAttemptId = null
-            }
+  private suspend fun requestD11PrintStatus(): Int? {
+    if (!synchronized(stateLock) { statusNotificationsEnabled }) return null
+    return withTimeoutOrNull(STATUS_RESPONSE_TIMEOUT_MS) {
+      suspendCancellableCoroutine { continuation ->
+        val canRequest = synchronized(stateLock) {
+          if (statusContinuation != null) {
+            false
+          } else {
+            statusContinuation = continuation
+            true
           }
+        }
+        if (!canRequest) {
           continuation.resumeWithException(
-            IOException("N12_WRITE_FAILED: The printer did not accept a label packet. Keep it powered on and try again.")
+            IllegalStateException("D11_STATUS_IN_PROGRESS: Wait for the current NIIMBOT D11 status check.")
           )
+          return@suspendCancellableCoroutine
+        }
+        try {
+          queueD11Write(buildD11Frame(CMD_PRINT_STATUS, byteArrayOf(0x01)))
+        } catch (error: Throwable) {
+          synchronized(stateLock) {
+            if (statusContinuation === continuation) statusContinuation = null
+          }
+          continuation.resumeWithException(error)
+          return@suspendCancellableCoroutine
         }
         continuation.invokeOnCancellation {
-          val wasPending = synchronized(stateLock) {
-            if (writeContinuation === continuation && pendingWriteAttemptId == attemptId) {
-              writeContinuation = null
-              pendingWriteAttemptId = null
-              true
-            } else {
-              false
-            }
-          }
-          if (wasPending) {
-            // The callback for a cancelled or timed-out Android GATT operation
-            // can arrive late. Closing this session prevents it from being
-            // mistaken for a callback for a later packet.
-            closeConnection(activeGatt, null)
+          synchronized(stateLock) {
+            if (statusContinuation === continuation) statusContinuation = null
           }
         }
       }
     }
-    if (writeCompleted == null) {
-      throw IOException("N12_WRITE_TIMED_OUT: The N12 stopped acknowledging a label packet. Reconnect and try again.")
-    }
-    return true
   }
 
   private fun createGattCallback(attemptId: Long) = object : BluetoothGattCallback() {
     override fun onConnectionStateChange(activeGatt: BluetoothGatt, status: Int, newState: Int) {
       if (!isCurrentGatt(activeGatt, attemptId)) return
       if (status != BluetoothGatt.GATT_SUCCESS) {
-        closeConnection(activeGatt, IOException("N12_CONNECTION_FAILED: The N12 disconnected during setup (status $status)."))
+        closeConnection(
+          activeGatt,
+          IOException("D11_CONNECTION_FAILED: The NIIMBOT D11 disconnected during setup (status $status).")
+        )
         return
       }
       if (newState == BluetoothProfile.STATE_CONNECTED) {
         if (!activeGatt.discoverServices()) {
-          closeConnection(activeGatt, IOException("N12_SERVICE_DISCOVERY_FAILED: Android could not inspect the N12 print service."))
+          closeConnection(
+            activeGatt,
+            IOException("D11_SERVICE_DISCOVERY_FAILED: Android could not inspect the NIIMBOT D11 print service.")
+          )
         }
       } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-        closeConnection(activeGatt, IOException("N12_DISCONNECTED: The N12 disconnected. Wake it and reconnect before printing."))
+        closeConnection(
+          activeGatt,
+          IOException("D11_DISCONNECTED: The NIIMBOT D11 disconnected. Wake it and reconnect before printing.")
+        )
       }
     }
 
     override fun onServicesDiscovered(activeGatt: BluetoothGatt, status: Int) {
       if (!isCurrentGatt(activeGatt, attemptId)) return
       if (status != BluetoothGatt.GATT_SUCCESS) {
-        closeConnection(activeGatt, IOException("N12_SERVICE_DISCOVERY_FAILED: Android could not inspect the N12 print service."))
-        return
-      }
-      val service = activeGatt.getService(PRINTER_SERVICE_UUID)
-      if (service == null) {
-        closeConnection(activeGatt,
-          IllegalStateException("N12_PROTOCOL_UNAVAILABLE: The selected device is not a compatible Zhuhai Jiuyin N12 printer.")
+        closeConnection(
+          activeGatt,
+          IOException("D11_SERVICE_DISCOVERY_FAILED: Android could not inspect the NIIMBOT D11 print service.")
         )
         return
       }
-      val output = service.getCharacteristic(WRITE_CHARACTERISTIC_UUID)
+      val service = activeGatt.getService(D11_SERVICE_UUID)
+      val output = service?.getCharacteristic(D11_CHARACTERISTIC_UUID)
       if (output == null) {
-        closeConnection(activeGatt,
-          IllegalStateException("N12_PROTOCOL_UNAVAILABLE: The selected device is not a compatible Zhuhai Jiuyin N12 printer.")
+        closeConnection(
+          activeGatt,
+          IllegalStateException(
+            "D11_PROTOCOL_UNAVAILABLE: The selected device is not a compatible NIIMBOT D11 printer."
+          )
         )
         return
       }
-
-      val supportsWrite = output.properties and BluetoothGattCharacteristic.PROPERTY_WRITE != 0
-      val supportsWriteWithoutResponse =
-        output.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE != 0
-      if (!supportsWrite && !supportsWriteWithoutResponse) {
-        closeConnection(activeGatt,
-          IllegalStateException("N12_PROTOCOL_UNAVAILABLE: The N12 print service does not allow label writes.")
+      val supportsNoResponse = (
+        output.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE
+        ) != 0
+      if (!supportsNoResponse) {
+        closeConnection(
+          activeGatt,
+          IllegalStateException(
+            "D11_PROTOCOL_UNAVAILABLE: The NIIMBOT D11 print service does not allow label writes."
+          )
         )
         return
       }
       synchronized(stateLock) {
-        writeCharacteristic = output
-        // Prefer acknowledged writes whenever the printer exposes them. On N12
-        // firmware that supports both modes, WRITE_NO_RESPONSE only confirms
-        // Android accepted the packet locally; it cannot tell us whether the
-        // printer received the raster data.
-        writesWithoutResponse = !supportsWrite && supportsWriteWithoutResponse
+        printerCharacteristic = output
+        negotiatedMtu = DEFAULT_ATT_MTU
+        notificationBuffer = byteArrayOf()
+        lastD11StatusPage = null
+        statusNotificationsEnabled = enableStatusNotifications(activeGatt, output)
       }
+      if (!activeGatt.requestMtu(D11_REQUESTED_MTU)) {
+        closeConnection(
+          activeGatt,
+          IOException("D11_MTU_NEGOTIATION_FAILED: Android could not prepare the NIIMBOT D11 for label data.")
+        )
+      }
+    }
 
-      synchronized(stateLock) {
-        flowCharacteristic = null
-        flowControlEnabled = false
-        flowControlSetupPending = false
-        flowControlSetupExpired = false
-        firstFlowCreditPending = false
-        availableFlowCredits = FALLBACK_FLOW_CREDITS
+    override fun onMtuChanged(activeGatt: BluetoothGatt, mtu: Int, status: Int) {
+      if (!isCurrentGatt(activeGatt, attemptId)) return
+      if (status != BluetoothGatt.GATT_SUCCESS || mtu < MINIMUM_D11_MTU) {
+        closeConnection(
+          activeGatt,
+          IOException(
+            "D11_MTU_TOO_SMALL: The NIIMBOT D11 needs a larger Bluetooth packet size for labels. Reconnect and try again."
+          )
+        )
+        return
+      }
+      val output = synchronized(stateLock) {
+        negotiatedMtu = mtu
+        printerCharacteristic
+      } ?: return
+      try {
+        queueD11Write(buildD11Frame(CMD_CONNECT, byteArrayOf(0x01)))
+      } catch (error: Throwable) {
+        closeConnection(activeGatt, error)
+        return
       }
       scheduleConnectionCompletion(activeGatt, attemptId, PRINTER_READY_DELAY_MS)
     }
@@ -867,7 +757,7 @@ class PriceTagPrinterModule : Module() {
       characteristic: BluetoothGattCharacteristic,
       value: ByteArray
     ) {
-      handleFlowControlNotification(activeGatt, attemptId, characteristic, value)
+      handleD11Notification(activeGatt, attemptId, characteristic, value)
     }
 
     @Suppress("DEPRECATION")
@@ -875,75 +765,97 @@ class PriceTagPrinterModule : Module() {
       activeGatt: BluetoothGatt,
       characteristic: BluetoothGattCharacteristic
     ) {
-      handleFlowControlNotification(
+      handleD11Notification(
         activeGatt,
         attemptId,
         characteristic,
         characteristic.value ?: byteArrayOf()
       )
     }
+  }
 
-    override fun onCharacteristicWrite(
-      activeGatt: BluetoothGatt,
-      characteristic: BluetoothGattCharacteristic,
-      status: Int
-    ) {
-      if (!isCurrentGatt(activeGatt, attemptId)) return
-      if (characteristic.uuid != WRITE_CHARACTERISTIC_UUID) return
-      val continuation = synchronized(stateLock) {
-        if (pendingWriteAttemptId == null) {
-          null
-        } else {
-          pendingWriteAttemptId = null
-          writeContinuation.also { writeContinuation = null }
-        }
-      }
-      continuation?.let { pending ->
-        if (!pending.isActive) return@let
-        if (status == BluetoothGatt.GATT_SUCCESS) {
-          pending.resume(Unit)
-        } else {
-          pending.resumeWithException(
-            IOException("N12_WRITE_FAILED: The N12 rejected a label packet (status $status).")
-          )
-        }
-      }
+  @SuppressLint("MissingPermission")
+  private fun enableStatusNotifications(
+    activeGatt: BluetoothGatt,
+    characteristic: BluetoothGattCharacteristic
+  ): Boolean {
+    if (characteristic.properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY == 0) return false
+    if (!activeGatt.setCharacteristicNotification(characteristic, true)) return false
+    val descriptor = characteristic.getDescriptor(CLIENT_CHARACTERISTIC_CONFIG_UUID) ?: return false
+    descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+    return try {
+      @Suppress("DEPRECATION")
+      activeGatt.writeDescriptor(descriptor)
+    } catch (_: SecurityException) {
+      false
     }
   }
 
-  private fun handleFlowControlNotification(
+  private fun handleD11Notification(
     activeGatt: BluetoothGatt,
     attemptId: Long,
     characteristic: BluetoothGattCharacteristic,
-    value: ByteArray
+    incoming: ByteArray
   ) {
-    if (!isCurrentGatt(activeGatt, attemptId)) return
-    if (characteristic.uuid != FLOW_CONTROL_CHARACTERISTIC_UUID || value.size < 2 || value[0].toInt() != 0x01) {
-      return
-    }
-    val continuation = synchronized(stateLock) {
-      if (!flowControlEnabled && !(flowControlSetupPending && !flowControlSetupExpired)) {
-        null
-      } else {
-        // Protocol 0x01 grants one packet credit per unit. Existing
-        // PrintMaster implementations preserve 0x04 as four credits.
-        val granted = value[1].toInt() and 0xFF
-        availableFlowCredits += if (granted == 0x04) 4 else granted
-        if (availableFlowCredits > 0) {
-          firstFlowCreditPending = false
-        }
-        if (availableFlowCredits > 0) {
-          flowCreditContinuation?.also {
-            availableFlowCredits -= 1
-            flowCreditContinuation = null
+    if (!isCurrentGatt(activeGatt, attemptId) || characteristic.uuid != D11_CHARACTERISTIC_UUID) return
+    val frames = synchronized(stateLock) {
+      notificationBuffer += incoming
+      val parsed = mutableListOf<D11Response>()
+      while (notificationBuffer.size >= MIN_D11_FRAME_SIZE) {
+        var head = -1
+        for (index in 0 until notificationBuffer.size - 1) {
+          if (notificationBuffer[index] == FRAME_HEAD && notificationBuffer[index + 1] == FRAME_HEAD) {
+            head = index
+            break
           }
-        } else {
-          null
+        }
+        if (head < 0) {
+          notificationBuffer = notificationBuffer.takeLast(1).toByteArray()
+          break
+        }
+        if (head > 0) notificationBuffer = notificationBuffer.copyOfRange(head, notificationBuffer.size)
+        if (notificationBuffer.size < MIN_D11_FRAME_SIZE) break
+        val dataLength = notificationBuffer[3].toInt() and 0xFF
+        val frameSize = MIN_D11_FRAME_SIZE + dataLength
+        if (notificationBuffer.size < frameSize) break
+        val frame = notificationBuffer.copyOfRange(0, frameSize)
+        notificationBuffer = notificationBuffer.copyOfRange(frameSize, notificationBuffer.size)
+        val expectedChecksumIndex = 4 + dataLength
+        var checksum = (frame[2].toInt() and 0xFF) xor dataLength
+        for (index in 0 until dataLength) checksum = checksum xor (frame[4 + index].toInt() and 0xFF)
+        if (
+          frame[frameSize - 2] != FRAME_TAIL ||
+          frame[frameSize - 1] != FRAME_TAIL ||
+          (frame[expectedChecksumIndex].toInt() and 0xFF) != checksum
+        ) {
+          continue
+        }
+        parsed += D11Response(
+          command = frame[2].toInt() and 0xFF,
+          data = frame.copyOfRange(4, 4 + dataLength)
+        )
+      }
+      parsed
+    }
+    frames.forEach { response ->
+      if (response.command == RESP_PRINT_STATUS && response.data.size >= 2) {
+        val page = ((response.data[0].toInt() and 0xFF) shl 8) or
+          (response.data[1].toInt() and 0xFF)
+        val continuation = synchronized(stateLock) {
+          lastD11StatusPage = page
+          statusContinuation.also { statusContinuation = null }
+        }
+        if (continuation?.isActive == true) continuation.resume(page)
+      } else if (response.command == RESP_PRINT_ERROR) {
+        val continuation = synchronized(stateLock) {
+          statusContinuation.also { statusContinuation = null }
+        }
+        if (continuation?.isActive == true) {
+          continuation.resumeWithException(
+            IOException("D11_PRINT_REJECTED: The NIIMBOT D11 rejected the label setup. Check the installed tape and try again.")
+          )
         }
       }
-    }
-    if (continuation?.isActive == true) {
-      continuation.resume(Unit)
     }
   }
 
@@ -952,25 +864,14 @@ class PriceTagPrinterModule : Module() {
     attemptId: Long,
     delayMs: Long
   ) {
-    mainHandler.postDelayed(
-      {
-        val canComplete = synchronized(stateLock) {
-          if (
-            gatt !== activeGatt ||
-            pendingConnectionAttemptId != attemptId ||
-            connectionContinuation == null
-          ) {
-            false
-          } else {
-            true
-          }
-        }
-        if (canComplete) {
-          completeConnection(activeGatt)
-        }
-      },
-      delayMs
-    )
+    mainHandler.postDelayed({
+      val canComplete = synchronized(stateLock) {
+        gatt === activeGatt &&
+          pendingConnectionAttemptId == attemptId &&
+          connectionContinuation != null
+      }
+      if (canComplete) completeConnection(activeGatt)
+    }, delayMs)
   }
 
   private fun isCurrentGatt(candidate: BluetoothGatt, attemptId: Long): Boolean =
@@ -982,8 +883,6 @@ class PriceTagPrinterModule : Module() {
         pendingConnectionAttemptId == attemptId &&
         connectionContinuation != null
       ) {
-        // Android can dispatch a connection callback before connectGatt
-        // returns. This callback owns only its matching attempt.
         gatt = candidate
         true
       } else {
@@ -1000,7 +899,7 @@ class PriceTagPrinterModule : Module() {
     }
     if (continuation?.isActive == true) {
       val address = synchronized(stateLock) { connectedAddress } ?: ""
-      continuation.resume(mapOf("name" to "N12 label printer", "address" to address))
+      continuation.resume(mapOf("name" to "NIIMBOT D11", "address" to address))
     }
   }
 
@@ -1020,9 +919,7 @@ class PriceTagPrinterModule : Module() {
 
   private fun releaseConnectionReservation(attemptId: Long) {
     synchronized(stateLock) {
-      if (reservedConnectionAttemptId == attemptId) {
-        reservedConnectionAttemptId = null
-      }
+      if (reservedConnectionAttemptId == attemptId) reservedConnectionAttemptId = null
     }
   }
 
@@ -1030,11 +927,7 @@ class PriceTagPrinterModule : Module() {
     reason: Throwable? = null,
     preserveConnectionReservation: Boolean = false
   ) {
-    closeConnection(
-      expectedGatt = null,
-      reason = reason,
-      preserveConnectionReservation = preserveConnectionReservation
-    )
+    closeConnection(null, reason, preserveConnectionReservation)
   }
 
   private fun closeConnection(
@@ -1043,81 +936,89 @@ class PriceTagPrinterModule : Module() {
     preserveConnectionReservation: Boolean = false
   ) {
     val toFailConnection: CancellableContinuation<Map<String, String>>?
-    val toFailWrite: CancellableContinuation<Unit>?
-    val toFailFlowCredit: CancellableContinuation<Unit>?
+    val toFailStatus: CancellableContinuation<Int>?
     val activeGatt: BluetoothGatt?
     synchronized(stateLock) {
       if (expectedGatt != null && gatt !== expectedGatt) return
       toFailConnection = connectionContinuation
-      toFailWrite = writeContinuation
-      toFailFlowCredit = flowCreditContinuation
+      toFailStatus = statusContinuation
       connectionContinuation = null
-      writeContinuation = null
-      pendingWriteAttemptId = null
-      flowCreditContinuation = null
+      statusContinuation = null
       pendingConnectionAttemptId = null
-      if (!preserveConnectionReservation) {
-        reservedConnectionAttemptId = null
-      }
+      if (!preserveConnectionReservation) reservedConnectionAttemptId = null
       activeGatt = gatt
       gatt = null
-      writeCharacteristic = null
-      flowCharacteristic = null
+      printerCharacteristic = null
       connectedAddress = null
-      writesWithoutResponse = false
-      flowControlEnabled = false
-      flowControlSetupPending = false
-      flowControlSetupExpired = false
-      firstFlowCreditPending = false
-      availableFlowCredits = FALLBACK_FLOW_CREDITS
+      negotiatedMtu = DEFAULT_ATT_MTU
+      statusNotificationsEnabled = false
+      notificationBuffer = byteArrayOf()
+      lastD11StatusPage = null
     }
     try {
       activeGatt?.disconnect()
       activeGatt?.close()
     } catch (_: SecurityException) {
-      // The Android connection is already being released.
+      // Android is already releasing the Bluetooth session.
     }
     if (reason != null) {
       if (toFailConnection?.isActive == true) toFailConnection.resumeWithException(reason)
-      if (toFailWrite?.isActive == true) toFailWrite.resumeWithException(reason)
-      if (toFailFlowCredit?.isActive == true) toFailFlowCredit.resumeWithException(reason)
+      if (toFailStatus?.isActive == true) toFailStatus.resumeWithException(reason)
     }
   }
 
+  private data class D11PrintJob(
+    val frames: List<ByteArray>,
+    val maxFrameBytes: Int
+  )
+
+  private data class D11Response(
+    val command: Int,
+    val data: ByteArray
+  )
+
   companion object {
-    private data class PrintDeliveryResult(
-      val packetCount: Int,
-      val acknowledgedPacketCount: Int,
-      val writeMode: String,
-      val packetBytes: Int,
-      val usedFlowControl: Boolean
-    )
+    private val D11_SERVICE_UUID: UUID = UUID.fromString("e7810a71-73ae-499d-8c15-faa9aef0c3f2")
+    private val D11_CHARACTERISTIC_UUID: UUID = UUID.fromString("bef8d6c9-9c21-4c9e-b632-bd58c1009f9f")
+    private val CLIENT_CHARACTERISTIC_CONFIG_UUID: UUID =
+      UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
-    private data class N12PrintJob(
-      val headerAndImage: ByteArray,
-      val footer: ByteArray
-    )
-
-    private val PRINTER_SERVICE_UUID: UUID = UUID.fromString("0000ff00-0000-1000-8000-00805f9b34fb")
-    private val WRITE_CHARACTERISTIC_UUID: UUID = UUID.fromString("0000ff02-0000-1000-8000-00805f9b34fb")
-    private val FLOW_CONTROL_CHARACTERISTIC_UUID: UUID = UUID.fromString("0000ff03-0000-1000-8000-00805f9b34fb")
-    private val CLIENT_CHARACTERISTIC_CONFIG_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+    private const val FRAME_HEAD: Byte = 0x55
+    private const val FRAME_TAIL: Byte = 0xAA.toByte()
+    private const val CMD_CONNECT = 0xC1
+    private const val CMD_PAGE_START = 0x03
+    private const val CMD_PRINT_QUANTITY = 0x15
+    private const val CMD_SET_PAGE_SIZE = 0x13
+    private const val CMD_PRINT_CLEAR = 0x20
+    private const val CMD_SET_DENSITY = 0x21
+    private const val CMD_SET_LABEL_TYPE = 0x23
+    private const val CMD_PRINT_BITMAP_ROW = 0x85
+    private const val CMD_PRINT_EMPTY_ROW = 0x84
+    private const val CMD_PRINT_STATUS = 0xA3
+    private const val CMD_PAGE_END = 0xE3
+    private const val CMD_PRINT_START = 0x01
+    private const val CMD_PRINT_END = 0xF3
+    private const val RESP_PRINT_STATUS = 0xB3
+    private const val RESP_PRINT_ERROR = 0xDB
 
     private const val SCAN_DURATION_MS = 6_000L
     private const val CONNECTION_TIMEOUT_MS = 12_000L
-    private const val PACKET_WRITE_TIMEOUT_MS = 8_000L
-    private const val PACKET_DELAY_MS = 3L
-    private const val PACKET_RETRY_DELAY_MS = 120L
-    private const val PRINTER_READY_DELAY_MS = 300L
-    private const val FLOW_CREDIT_TIMEOUT_MS = 1_500L
-    private const val PRINT_RASTER_PROCESSING_DELAY_MS = 2_000L
-    private const val PRINT_DISPATCH_SETTLE_MS = 1_500L
+    private const val PRINTER_READY_DELAY_MS = 250L
+    private const val PACKET_DELAY_MS = 8L
+    private const val STATUS_RESPONSE_TIMEOUT_MS = 900L
+    private const val PRINT_STATUS_POLL_DELAY_MS = 120L
+    private const val PRINT_STATUS_ATTEMPTS = 5
+    private const val PRINT_DISPATCH_SETTLE_MS = 350L
     private const val GATT_RECONNECT_DELAY_MS = 250L
-    private const val DEFAULT_PACKET_BYTES = 20
-    private const val ZLIB_BLOCK_SIZE = 1_024
-    private const val FALLBACK_FLOW_CREDITS = 1_000
+    private const val DEFAULT_ATT_MTU = 23
+    private const val D11_REQUESTED_MTU = 247
+    private const val MINIMUM_D11_MTU = 32
+    private const val ATT_PROTOCOL_OVERHEAD = 3
+    private const val MIN_D11_FRAME_SIZE = 7
+    private const val D11_LABEL_TYPE = 1
+    private const val D11_DENSITY = 2
 
-    // 12 mm at 203 dpi is approximately 96 thermal dots across.
+    // 12 mm at the D11's 203 DPI print head is approximately 96 thermal dots.
     private const val LABEL_WIDTH_DOTS = 96
     private const val LABEL_PADDING_X = 4
     private const val LABEL_PADDING_Y = 6

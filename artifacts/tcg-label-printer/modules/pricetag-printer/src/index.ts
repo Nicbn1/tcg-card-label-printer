@@ -22,10 +22,12 @@ export type NativePrinterLabel = {
 
 export type NativePrinterDelivery = {
   packetCount: number;
-  acknowledgedPacketCount: number;
-  writeMode: 'acknowledged' | 'no-response-queued';
+  writeMode: 'no-response-queued';
   packetBytes: number;
-  usedFlowControl: boolean;
+  /** A D11 PrintStatus notification was received after the page was sent. */
+  statusReceived: boolean;
+  /** D11 page number reported by the most recent print-status response. */
+  completedPageCount: number | null;
 };
 
 type PriceTagPrinterNativeModule = {

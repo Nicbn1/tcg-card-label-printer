@@ -39,15 +39,15 @@ export function PrinterSetupCard() {
       const permission = await getBluetoothPermissionStatus();
       const allowed = permission.granted ? permission : await requestBluetoothPermissions();
       if (!allowed.granted) {
-        setMessage('Allow Nearby devices access to find your N12.');
+        setMessage('Allow Nearby devices access to find your NIIMBOT D11.');
         return;
       }
       const nearbyDevices = await scanForPrinters();
       setDevices(nearbyDevices);
       setMessage(
         nearbyDevices.length
-          ? 'Choose your N12 from the paired or nearby Bluetooth devices.'
-          : 'No paired or nearby Bluetooth devices found. Turn on the N12, then scan again.',
+          ? 'Choose your NIIMBOT D11 from the paired or nearby Bluetooth devices.'
+          : 'No paired or nearby Bluetooth devices found. Turn on the D11, then scan again.',
       );
     } catch (error: unknown) {
       setMessage(error instanceof Error ? error.message : 'Could not find nearby Bluetooth printers.');
@@ -87,10 +87,10 @@ export function PrinterSetupCard() {
         </View>
         <View style={styles.copy}>
           <Text style={[styles.title, { color: colors.foreground, fontFamily: 'Inter_600SemiBold' }]}>
-            Core Tech N12
+            NIIMBOT D11
           </Text>
           <Text style={[styles.subtitle, { color: colors.mutedForeground, fontFamily: 'Inter_400Regular' }]}>
-            {isNativeBuild ? 'Find your nearby printer for labels' : 'Native Android build required'}
+            {isNativeBuild ? 'Find your nearby printer for labels' : 'Android APK required'}
           </Text>
         </View>
         <View style={[styles.badge, { backgroundColor: colors.muted }]}>
@@ -104,14 +104,14 @@ export function PrinterSetupCard() {
 
       {!isNativeBuild ? (
         <Text style={[styles.body, { color: colors.mutedForeground, fontFamily: 'Inter_400Regular' }]}>
-          Pair your N12 in Android settings, then install an Android APK to choose it and transmit labels. Expo Go and web safely save labels to history.
+          Pair your NIIMBOT D11 in Android settings, then install an Android APK to choose it and transmit labels. Expo Go and web safely save labels to history.
         </Text>
       ) : (
         <>
           <Text style={[styles.body, { color: colors.mutedForeground, fontFamily: 'Inter_400Regular' }]}>
             {savedAddress
               ? `Selected printer: ${savedAddress}`
-              : 'Turn on or pair the N12, then find it below.'}
+              : 'Turn on or pair the NIIMBOT D11, then find it below.'}
           </Text>
 
           <View style={styles.actions}>
@@ -127,7 +127,7 @@ export function PrinterSetupCard() {
                 <Feather name="search" size={16} color={colors.primaryForeground} />
               )}
               <Text style={[styles.actionText, { color: colors.primaryForeground, fontFamily: 'Inter_600SemiBold' }]}>
-                Find nearby N12
+                Find nearby D11
               </Text>
             </TouchableOpacity>
             {!!savedAddress && (

@@ -32,6 +32,13 @@ import {
   type LabelPresetId,
 } from '@/services/labelPresets';
 
+function describeD11Delivery(delivery: Awaited<ReturnType<typeof sendToPrinter>>): string {
+  const statusDetail = delivery.statusReceived
+    ? `D11 status received${delivery.completedPageCount === null ? '' : ` for page ${delivery.completedPageCount}`}`
+    : `${delivery.packetCount} D11 packets queued`;
+  return `${statusDetail}; up to ${delivery.packetBytes} bytes per BLE write.`;
+}
+
 export default function CardDetailScreen() {
   const colors = useColors();
   const params = useLocalSearchParams<{
@@ -109,19 +116,19 @@ export default function CardDetailScreen() {
 
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setPrinted(true);
-      const deliveryDetail =
-        delivery.writeMode === 'acknowledged'
-          ? `${delivery.acknowledgedPacketCount}/${delivery.packetCount} BLE packets acknowledged`
-          : `${delivery.packetCount} packets queued without peripheral acknowledgement`;
-      const report = `${deliveryDetail}; ${delivery.packetBytes}-byte packets; ${
-        delivery.usedFlowControl ? 'FF03 buffer credits used' : 'paced fallback used'
-      }.`;
-      setPrintReport(`BLE delivery confirmed: ${report} Physical printing still depends on printer acceptance.`);
+      const deliveryDetail = describeD11Delivery(delivery);
+      setPrintReport(
+        delivery.statusReceived
+          ? `D11 printer status received: ${deliveryDetail}`
+          : `D11 packets queued: ${deliveryDetail} Physical printing still depends on the printer accepting the job.`,
+      );
       Alert.alert(
-        'Label sent to N12',
-        `${deliveryDetail}\nPayload size: up to ${delivery.packetBytes} bytes per BLE write${
-          delivery.usedFlowControl ? '\nFF03 buffer credits used.' : '\nNo FF03 credits received; paced fallback used.'
-        }\n\nBLE acknowledgement confirms transport delivery, not that the printer rendered the label.`,
+        'Label sent to D11',
+        `${deliveryDetail}\n\n${
+          delivery.statusReceived
+            ? 'The D11 reported print status. Check the label as it feeds.'
+            : 'The D11 uses queued BLE writes. Check the label as it feeds.'
+        }`,
         [{ text: 'OK' }],
       );
     } catch (err: unknown) {
@@ -138,7 +145,7 @@ export default function CardDetailScreen() {
       Alert.alert(
         isExpoGo ? 'Saved to History' : 'Print Error',
         isExpoGo
-          ? 'Label saved to history.\n\nTo print via the Core Tech N12, build this app as an APK. See README for instructions.'
+          ? 'Label saved to history.\n\nTo print via the NIIMBOT D11, build this app as an APK. See README for instructions.'
           : msg,
         [{ text: 'OK' }],
       );
@@ -157,19 +164,15 @@ export default function CardDetailScreen() {
       const delivery = await sendToPrinter('', label);
 
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      const deliveryDetail =
-        delivery.writeMode === 'acknowledged'
-          ? `${delivery.acknowledgedPacketCount}/${delivery.packetCount} BLE packets acknowledged`
-          : `${delivery.packetCount} packets queued without peripheral acknowledgement`;
-      const report = `${deliveryDetail}; ${delivery.packetBytes}-byte packets; ${
-        delivery.usedFlowControl ? 'FF03 buffer credits used' : 'paced fallback used'
-      }.`;
-      setPrintReport(`Reprint — BLE delivery confirmed: ${report} Physical printing still depends on printer acceptance.`);
+      const deliveryDetail = describeD11Delivery(delivery);
+      setPrintReport(
+        delivery.statusReceived
+          ? `Reprint — D11 printer status received: ${deliveryDetail}`
+          : `Reprint — D11 packets queued: ${deliveryDetail} Physical printing still depends on the printer accepting the job.`,
+      );
       Alert.alert(
-        'Reprint sent to N12',
-        `${deliveryDetail}\nPayload size: up to ${delivery.packetBytes} bytes per BLE write${
-          delivery.usedFlowControl ? '\nFF03 buffer credits used.' : '\nNo FF03 credits received; paced fallback used.'
-        }\n\nA second history entry has been recorded for this reprint.`,
+        'Reprint sent to D11',
+        `${deliveryDetail}\n\nA second history entry has been recorded for this reprint.`,
         [{ text: 'OK' }],
       );
     } catch (err: unknown) {
@@ -185,7 +188,7 @@ export default function CardDetailScreen() {
       Alert.alert(
         isExpoGo ? 'Saved to History' : 'Reprint Error',
         isExpoGo
-          ? 'Reprint saved to history.\n\nTo print via the Core Tech N12, build this app as an APK.'
+          ? 'Reprint saved to history.\n\nTo print via the NIIMBOT D11, build this app as an APK.'
           : msg,
         [{ text: 'OK' }],
       );
@@ -400,7 +403,7 @@ export default function CardDetailScreen() {
               { color: colors.mutedForeground, fontFamily: 'Inter_500Medium' },
             ]}
           >
-            N12 LABEL PREVIEW · 12 mm × 40 mm
+            D11 LABEL PREVIEW · 12 mm × 40 mm
           </Text>
           <PrintLabel label={label} />
         </View>

@@ -236,7 +236,7 @@ export default function SettingsScreen() {
       Alert.alert(
         message.includes('EXPO_GO_ONLY') ? 'Saved to History' : 'Print Error',
         message.includes('EXPO_GO_ONLY')
-          ? 'The reprint was saved to history. Build the Android APK to print through the Core Tech N12.'
+          ? 'The reprint was saved to history. Build the Android APK to print through the NIIMBOT D11.'
           : message,
       );
     } finally {

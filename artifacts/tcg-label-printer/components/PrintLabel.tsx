@@ -10,7 +10,7 @@ interface Props {
 
 /**
  * Visual preview of the label as it will appear on 12 mm × ~50 mm tape
- * from the Core Tech N12 printer.
+ * from the NIIMBOT D11 printer.
  *
  * Includes:
  *  - Card name, series, price (bigger + darker)
