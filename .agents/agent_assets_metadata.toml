@@ -28,3 +28,17 @@ mtime_ms = 1787415587215
 storage_uri = "gcs://replit-rams-assets-riker/rams/assets/repl:c26c3029-5473-4220-8128-030e4f847ce5/07153d70-1e7b-47a6-bf7e-ef425d58b271/3cc458c6-e602-4708-b39a-bd38f88836af"
 storage_version_token = "1787415736270691"
 content_type = "application/octet-stream"
+
+[[outputs]]
+id = "DMmJUQFhoOXAdDFGBr8t5"
+uri = "file://artifacts/tcg-label-printer/android/app/build/outputs/apk/release/app-release.apk"
+type = "unspecified"
+title = "PriceTag D11 larger horizontal APK (arm64)"
+description = "Fresh arm64 release with larger horizontal text and font-metric-based scaling that keeps dense custom labels within the 12 mm tape height. Package com.anonymous.pricetag, version 1.0.0, SHA-256 bdf07fee2ae0cf74e18ccc9250b55bbeea9a0c103a37f09d93f1e36e1ffed88a."
+logical_id = "940c763d-324c-46e6-832c-d4e939028249"
+content_hash = "sha256:bdf07fee2ae0cf74e18ccc9250b55bbeea9a0c103a37f09d93f1e36e1ffed88a"
+size = 40918014
+mtime_ms = 1787799999494
+storage_uri = "gcs://replit-rams-assets-riker/rams/assets/repl:c26c3029-5473-4220-8128-030e4f847ce5/940c763d-324c-46e6-832c-d4e939028249/4efe7d4b-a69f-4cf5-92ed-5e0e483d665a"
+storage_version_token = "1787800023967818"
+content_type = "application/octet-stream"
