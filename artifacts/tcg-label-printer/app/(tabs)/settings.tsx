@@ -23,7 +23,11 @@ import {
   updateHistoryStatus,
   type HistoryEntry,
 } from '@/services/history';
-import { type LabelData, sendToPrinter } from '@/services/printer';
+import {
+  extractPrinterErrorMessage,
+  type LabelData,
+  sendToPrinter,
+} from '@/services/printer';
 import { PrintLabel } from '@/components/PrintLabel';
 import { PrinterSetupCard } from '@/components/PrinterSetupCard';
 import { formatPrice } from '@/services/pricecharting';
@@ -229,15 +233,20 @@ export default function SettingsScreen() {
     setReprinting(true);
     try {
       await addHistoryEntry({ ...label, isReprint: true, inventoryTracked: false });
-      await sendToPrinter('', label);
-      Alert.alert('Label sent', 'The saved label has been sent to the printer.');
+      const delivery = await sendToPrinter('', label);
+      Alert.alert(
+        delivery.statusReceived ? 'D11 status received' : 'Label queued for D11',
+        delivery.statusReceived
+          ? 'The D11 reported print status. Check the label as it feeds.'
+          : 'The label’s BLE packets were queued. This is not a printer acknowledgement, so check the label as it feeds.',
+      );
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       Alert.alert(
         message.includes('EXPO_GO_ONLY') ? 'Saved to History' : 'Print Error',
         message.includes('EXPO_GO_ONLY')
           ? 'The reprint was saved to history. Build the Android APK to print through the NIIMBOT D11.'
-          : message,
+          : extractPrinterErrorMessage(error),
       );
     } finally {
       setReprinting(false);
