@@ -123,7 +123,7 @@ export default function CardDetailScreen() {
           : `D11 packets queued: ${deliveryDetail} Physical printing still depends on the printer accepting the job.`,
       );
       Alert.alert(
-        'Label sent to D11',
+        delivery.statusReceived ? 'D11 status received' : 'Label queued for D11',
         `${deliveryDetail}\n\n${
           delivery.statusReceived
             ? 'The D11 reported print status. Check the label as it feeds.'
@@ -171,8 +171,12 @@ export default function CardDetailScreen() {
           : `Reprint — D11 packets queued: ${deliveryDetail} Physical printing still depends on the printer accepting the job.`,
       );
       Alert.alert(
-        'Reprint sent to D11',
-        `${deliveryDetail}\n\nA second history entry has been recorded for this reprint.`,
+        delivery.statusReceived ? 'D11 reprint status received' : 'Reprint queued for D11',
+        `${deliveryDetail}\n\nA second history entry has been recorded for this reprint.${
+          delivery.statusReceived
+            ? ''
+            : ' Queued BLE writes are not a printer acknowledgement—check the label as it feeds.'
+        }`,
         [{ text: 'OK' }],
       );
     } catch (err: unknown) {
