@@ -58,7 +58,7 @@ class PriceTagPrinterModule : Module() {
   private var statusNotificationSetupPending = false
   private var notificationBuffer = byteArrayOf()
   private var lastD11StatusPage: Int? = null
-  private var pendingPrintError: IOException? = null
+  private val printRejection = D11PrintRejectionLatch()
   private var connectionAttemptId = 0L
   private var reservedConnectionAttemptId: Long? = null
   private var pendingConnectionAttemptId: Long? = null
@@ -416,7 +416,7 @@ class PriceTagPrinterModule : Module() {
 
       val job = createD11PrintJob(lines)
       synchronized(stateLock) {
-        pendingPrintError = null
+        printRejection.reset()
         lastD11StatusPage = null
       }
       job.frames.forEach { frame ->
@@ -460,12 +460,11 @@ class PriceTagPrinterModule : Module() {
       }
       delay(PRINT_DISPATCH_SETTLE_MS)
       throwIfD11PrintRejected()
-      return mapOf(
-        "packetCount" to (job.frames.size + statusPacketsQueued + 1),
-        "writeMode" to "no-response-queued",
-        "packetBytes" to job.maxFrameBytes,
-        "statusReceived" to receivedStatus,
-        "completedPageCount" to completedPageCount
+      return D11Protocol.deliveryMetadata(
+        packetCount = job.frames.size + statusPacketsQueued + 1,
+        packetBytes = job.maxFrameBytes,
+        statusReceived = receivedStatus,
+        completedPageCount = completedPageCount,
       )
     } finally {
       printMutex.unlock()
@@ -475,16 +474,7 @@ class PriceTagPrinterModule : Module() {
   private fun createD11PrintJob(lines: List<String>): D11PrintJob {
     val bitmap = renderLabel(lines)
     val frames = mutableListOf<ByteArray>()
-    frames += buildD11Frame(CMD_SET_DENSITY, byteArrayOf(D11_DENSITY.toByte()))
-    frames += buildD11Frame(CMD_SET_LABEL_TYPE, byteArrayOf(D11_LABEL_TYPE.toByte()))
-    frames += buildD11Frame(CMD_PRINT_START, byteArrayOf(0x01))
-    frames += buildD11Frame(CMD_PRINT_CLEAR, byteArrayOf(0x01))
-    frames += buildD11Frame(CMD_PAGE_START, byteArrayOf(0x01))
-    frames += buildD11Frame(
-      CMD_SET_PAGE_SIZE,
-      u16(bitmap.width) + u16(bitmap.height)
-    )
-    frames += buildD11Frame(CMD_PRINT_QUANTITY, u16(1))
+    frames += D11Protocol.preflightFrames(bitmap.width, bitmap.height)
 
     for (row in 0 until bitmap.height) {
       val rowBytes = packD11BitmapRow(bitmap, row)
@@ -631,28 +621,15 @@ class PriceTagPrinterModule : Module() {
   /**
    * NIIMBOT V3 stores page dimensions, row offsets, and page counters high-byte first.
    */
-  private fun u16(value: Int): ByteArray =
-    byteArrayOf(((value shr 8) and 0xFF).toByte(), (value and 0xFF).toByte())
+  private fun u16(value: Int): ByteArray = D11Protocol.u16(value)
 
-  private fun buildD11Frame(command: Int, data: ByteArray): ByteArray {
-    require(data.size <= 0xFF) { "NIIMBOT D11 packet data exceeds 255 bytes." }
-    var checksum = command xor data.size
-    data.forEach { byte -> checksum = checksum xor (byte.toInt() and 0xFF) }
-    return byteArrayOf(
-      FRAME_HEAD,
-      FRAME_HEAD,
-      command.toByte(),
-      data.size.toByte()
-    ) + data + byteArrayOf(
-      checksum.toByte(),
-      FRAME_TAIL,
-      FRAME_TAIL
-    )
-  }
+  private fun buildD11Frame(command: Int, data: ByteArray): ByteArray =
+    D11Protocol.buildFrame(command, data)
 
   private fun throwIfD11PrintRejected() {
-    val error = synchronized(stateLock) { pendingPrintError }
-    if (error != null) throw error
+    synchronized(stateLock) {
+      printRejection.throwIfRejected()
+    }
   }
 
   @SuppressLint("MissingPermission")
@@ -957,15 +934,14 @@ class PriceTagPrinterModule : Module() {
         }
         if (continuation?.isActive == true) continuation.resume(page)
       } else if (response.command == RESP_PRINT_ERROR) {
-        val error = IOException(
-          "D11_PRINT_REJECTED: The NIIMBOT D11 rejected the label setup. Check the installed tape and try again."
-        )
-        val continuation = synchronized(stateLock) {
-          pendingPrintError = error
-          statusContinuation.also { statusContinuation = null }
+        val (error, statusWaiter) = synchronized(stateLock) {
+          val error = printRejection.reject()
+          val statusWaiter = statusContinuation
+          statusContinuation = null
+          Pair(error, statusWaiter)
         }
-        if (continuation?.isActive == true) {
-          continuation.resumeWithException(error)
+        if (statusWaiter?.isActive == true) {
+          statusWaiter.resumeWithException(error)
         }
       }
     }
@@ -1099,17 +1075,10 @@ class PriceTagPrinterModule : Module() {
     private const val FRAME_HEAD: Byte = 0x55
     private const val FRAME_TAIL: Byte = 0xAA.toByte()
     private const val CMD_CONNECT = 0xC1
-    private const val CMD_PAGE_START = 0x03
-    private const val CMD_PRINT_QUANTITY = 0x15
-    private const val CMD_SET_PAGE_SIZE = 0x13
-    private const val CMD_PRINT_CLEAR = 0x20
-    private const val CMD_SET_DENSITY = 0x21
-    private const val CMD_SET_LABEL_TYPE = 0x23
     private const val CMD_PRINT_BITMAP_ROW = 0x85
     private const val CMD_PRINT_EMPTY_ROW = 0x84
     private const val CMD_PRINT_STATUS = 0xA3
     private const val CMD_PAGE_END = 0xE3
-    private const val CMD_PRINT_START = 0x01
     private const val CMD_PRINT_END = 0xF3
     private const val RESP_PRINT_STATUS = 0xB3
     private const val RESP_PRINT_ERROR = 0xDB
@@ -1128,9 +1097,6 @@ class PriceTagPrinterModule : Module() {
     private const val MINIMUM_D11_MTU = 32
     private const val ATT_PROTOCOL_OVERHEAD = 3
     private const val MIN_D11_FRAME_SIZE = 7
-    private const val D11_LABEL_TYPE = 1
-    private const val D11_DENSITY = 2
-
     // 12 mm at the D11's 203 DPI print head is approximately 96 thermal dots.
     private const val LABEL_WIDTH_DOTS = 96
     // ~50 mm of printable length gives the card details a landscape layout.

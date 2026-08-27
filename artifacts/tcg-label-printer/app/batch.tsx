@@ -24,6 +24,7 @@ import {
 } from '@/services/priceSelection';
 import { addHistoryEntry } from '@/services/history';
 import { sendToPrinter, extractPrinterErrorMessage } from '@/services/printer';
+import { getQueueIdsToRemove } from '@/services/printQueue';
 import { formatPrice } from '@/services/pricecharting';
 import { LabelPresetPicker } from '@/components/LabelPresetPicker';
 import type { LabelField, LabelPresetId } from '@/services/labelPresets';
@@ -196,8 +197,11 @@ export default function BatchQueueScreen() {
       if (!failedItems.length) {
         clearQueue();
       } else {
-        for (const queueId of items.map((item) => item.queueId)) {
-          if (!failedItems.includes(queueId)) removeItem(queueId);
+        for (const queueId of getQueueIdsToRemove(
+          items.map((item) => item.queueId),
+          failedItems,
+        )) {
+          removeItem(queueId);
         }
       }
       await Haptics.notificationAsync(

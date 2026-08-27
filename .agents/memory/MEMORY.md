@@ -1,6 +1,7 @@
 - [Expo module versions](expo-module-versions.md) — Match new Expo modules to Metro’s SDK compatibility guidance, not nearby release numbers.
 - [D11 print sequencing](d11-print-sequencing.md) — D11 values are big-endian; begin the task before page setup and latch print errors job-wide.
 - [D11 BLE readiness](d11-ble-readiness.md) — Android status 147 can drop a D11 GATT session during setup; retry setup once, never the print job.
+- [Expo native protocol tests](expo-native-protocol-tests.md) — Run module JVM tests from Expo’s generated Android project with an explicit Android SDK path.
 - [GitHub Actions access limits](github-actions-access-limits.md) — The connector cannot edit workflow paths or read protected job logs in this environment.
 - [N12 BLE readiness](n12-ble-readiness.md) — Treat MTU negotiation and no-response write callbacks as optional on Android BLE printers.
 - [TCGplayer inventory sync](tcgplayer-inventory-sync.md) — Use a seller CSV round-trip; preserve TCGplayer fields and change only quantity additions.
