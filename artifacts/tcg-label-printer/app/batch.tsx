@@ -164,6 +164,7 @@ export default function BatchQueueScreen() {
     setPrinting(true);
     const failedItems: string[] = [];
     const failedReasons: string[] = [];
+    let labelsWithPrinterStatus = 0;
     let savedForNativeBuild = 0;
     try {
       for (const item of items) {
@@ -179,7 +180,8 @@ export default function BatchQueueScreen() {
         );
         await addHistoryEntry({ ...label });
         try {
-          await sendToPrinter('', label);
+          const delivery = await sendToPrinter('', label);
+          if (delivery.statusReceived) labelsWithPrinterStatus += 1;
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           if (message.includes('EXPO_GO_ONLY')) {
@@ -217,10 +219,20 @@ export default function BatchQueueScreen() {
       }
 
       Alert.alert(
-        savedForNativeBuild ? 'Queue Saved to History' : 'Queue Sent',
+        savedForNativeBuild
+          ? 'Queue Saved to History'
+          : labelsWithPrinterStatus === items.length
+            ? 'D11 status received'
+            : 'Labels queued for D11',
         savedForNativeBuild
           ? `${savedForNativeBuild} labels were saved in order. Build the Android APK to send the queue to your NIIMBOT D11 printer.`
-          : `${items.length} labels were sent to the printer in order.`,
+          : labelsWithPrinterStatus === items.length
+            ? `The D11 reported status for all ${items.length} labels. Check each label as it feeds.`
+            : `${items.length} labels were queued to the D11 in order. ${
+                labelsWithPrinterStatus
+                  ? `The D11 reported status for ${labelsWithPrinterStatus} label${labelsWithPrinterStatus === 1 ? '' : 's'}; `
+                  : ''
+              }queued BLE writes are not a printer acknowledgement, so check every label as it feeds.`,
       );
       router.replace('/');
     } catch (error: unknown) {
