@@ -24,6 +24,7 @@ import PriceTagPrinter, {
 } from '@/modules/pricetag-printer';
 
 const SAVED_PRINTER_ADDRESS_KEY = '@pricetag_d11_printer_address';
+const D11_SETUP_RETRY_DELAY_MS = 750;
 
 export interface LabelData {
   cardName: string;
@@ -120,6 +121,38 @@ function nativePrinter() {
   return PriceTagPrinter;
 }
 
+function isTransientD11SetupDisconnect(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes('D11_CONNECTION_FAILED:') && message.includes('disconnected during setup');
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Android can occasionally drop a newly opened BLE GATT connection with an
+ * opaque platform status (including 147) before the D11 handshake completes.
+ * Retry that setup-only failure once, but never resend an already-started
+ * print job automatically.
+ */
+async function connectD11WithSetupRetry(address: string): Promise<NativePrinterDevice> {
+  const printer = nativePrinter();
+  try {
+    return await printer.connectAsync(address);
+  } catch (error) {
+    if (!isTransientD11SetupDisconnect(error)) throw error;
+
+    try {
+      await printer.disconnectAsync();
+    } catch {
+      // The native side has already started releasing the dropped GATT session.
+    }
+    await wait(D11_SETUP_RETRY_DELAY_MS);
+    return printer.connectAsync(address);
+  }
+}
+
 export function isNativePrinterAvailable(): boolean {
   return PriceTagPrinter !== null;
 }
@@ -153,7 +186,7 @@ export async function connectToPrinter(address?: string): Promise<PrinterDevice>
   if (!targetAddress) {
     throw new Error('PRINTER_NOT_SELECTED: Choose your nearby NIIMBOT D11 in Settings before printing.');
   }
-  const device = await nativePrinter().connectAsync(targetAddress);
+  const device = await connectD11WithSetupRetry(targetAddress);
   await setSavedPrinterAddress(device.address);
   return device;
 }
@@ -199,7 +232,7 @@ export async function sendToPrinter(
     throw new Error('PRINTER_NOT_SELECTED: Choose your nearby NIIMBOT D11 in Settings before printing.');
   }
 
-  await printer.connectAsync(targetAddress);
+  await connectD11WithSetupRetry(targetAddress);
   // Keep the D11 session alive while it finishes the physical feed. Forget /
   // disconnect remains the explicit way to release the selected printer.
   return printer.printLabelAsync({ lines: getPrintableLines(label) });
