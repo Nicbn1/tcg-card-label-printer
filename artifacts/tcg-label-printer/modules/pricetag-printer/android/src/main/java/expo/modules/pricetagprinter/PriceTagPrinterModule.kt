@@ -54,6 +54,7 @@ class PriceTagPrinterModule : Module() {
   private var connectedAddress: String? = null
   private var negotiatedMtu = DEFAULT_ATT_MTU
   private var statusNotificationsEnabled = false
+  private var statusNotificationSetupPending = false
   private var notificationBuffer = byteArrayOf()
   private var lastD11StatusPage: Int? = null
   private var pendingPrintError: IOException? = null
@@ -737,19 +738,46 @@ class PriceTagPrinterModule : Module() {
         )
         return
       }
+      val canEnableStatusNotifications = (
+        output.properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY
+        ) != 0 && output.getDescriptor(CLIENT_CHARACTERISTIC_CONFIG_UUID) != null
       synchronized(stateLock) {
         printerCharacteristic = output
         negotiatedMtu = DEFAULT_ATT_MTU
         notificationBuffer = byteArrayOf()
         lastD11StatusPage = null
-        statusNotificationsEnabled = enableStatusNotifications(activeGatt, output)
+        statusNotificationsEnabled = false
+        statusNotificationSetupPending = canEnableStatusNotifications
       }
-      if (!activeGatt.requestMtu(D11_REQUESTED_MTU)) {
-        closeConnection(
-          activeGatt,
-          IOException("D11_MTU_NEGOTIATION_FAILED: Android could not prepare the NIIMBOT D11 for label data.")
-        )
+      val notificationWriteQueued = canEnableStatusNotifications &&
+        enableStatusNotifications(activeGatt, output)
+      if (!notificationWriteQueued) {
+        synchronized(stateLock) {
+          statusNotificationSetupPending = false
+        }
+        requestD11Mtu(activeGatt)
       }
+    }
+
+    @SuppressLint("MissingPermission")
+    override fun onDescriptorWrite(
+      activeGatt: BluetoothGatt,
+      descriptor: BluetoothGattDescriptor,
+      status: Int
+    ) {
+      if (!isCurrentGatt(activeGatt, attemptId) ||
+        descriptor.uuid != CLIENT_CHARACTERISTIC_CONFIG_UUID
+      ) return
+      val shouldRequestMtu = synchronized(stateLock) {
+        if (!statusNotificationSetupPending) {
+          false
+        } else {
+          statusNotificationSetupPending = false
+          statusNotificationsEnabled = status == BluetoothGatt.GATT_SUCCESS
+          true
+        }
+      }
+      if (shouldRequestMtu) requestD11Mtu(activeGatt)
     }
 
     override fun onMtuChanged(activeGatt: BluetoothGatt, mtu: Int, status: Int) {
@@ -812,6 +840,17 @@ class PriceTagPrinterModule : Module() {
       activeGatt.writeDescriptor(descriptor)
     } catch (_: SecurityException) {
       false
+    }
+  }
+
+  @SuppressLint("MissingPermission")
+  private fun requestD11Mtu(activeGatt: BluetoothGatt) {
+    if (synchronized(stateLock) { gatt !== activeGatt }) return
+    if (!activeGatt.requestMtu(D11_REQUESTED_MTU)) {
+      closeConnection(
+        activeGatt,
+        IOException("D11_MTU_NEGOTIATION_FAILED: Android could not prepare the NIIMBOT D11 for label data.")
+      )
     }
   }
 
@@ -978,6 +1017,7 @@ class PriceTagPrinterModule : Module() {
       connectedAddress = null
       negotiatedMtu = DEFAULT_ATT_MTU
       statusNotificationsEnabled = false
+      statusNotificationSetupPending = false
       notificationBuffer = byteArrayOf()
       lastD11StatusPage = null
     }
