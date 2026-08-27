@@ -14,6 +14,7 @@ import android.bluetooth.le.ScanResult
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Matrix
 import android.graphics.Paint
 import android.os.Build
 import android.os.Handler
@@ -509,39 +510,85 @@ class PriceTagPrinterModule : Module() {
   }
 
   private fun renderLabel(lines: List<String>): Bitmap {
-    val firstLineHeight = 16
-    val standardLineHeight = 13
-    val height = maxOf(
-      MIN_LABEL_HEIGHT,
-      LABEL_PADDING_Y * 2 + firstLineHeight + (lines.drop(1).size * standardLineHeight)
+    /*
+     * The D11 consumes one bitmap row across the 96-dot print head and advances
+     * the tape for each row. Render the label in its natural landscape
+     * orientation first, then rotate it into that transport coordinate system.
+     * This keeps text horizontal along the long edge of the 12 mm tape.
+     */
+    val logicalBitmap = Bitmap.createBitmap(
+      LABEL_LENGTH_DOTS,
+      LABEL_WIDTH_DOTS,
+      Bitmap.Config.ARGB_8888
     )
-    val bitmap = Bitmap.createBitmap(LABEL_WIDTH_DOTS, height, Bitmap.Config.ARGB_8888)
-    val canvas = Canvas(bitmap)
+    val canvas = Canvas(logicalBitmap)
     canvas.drawColor(Color.WHITE)
     val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
       color = Color.BLACK
-      typeface = android.graphics.Typeface.create(
-        android.graphics.Typeface.MONOSPACE,
-        android.graphics.Typeface.NORMAL
-      )
     }
-    val maxWidth = LABEL_WIDTH_DOTS - (LABEL_PADDING_X * 2)
-    var baseline = LABEL_PADDING_Y + 12
+    val maxWidth = LABEL_LENGTH_DOTS - (LABEL_PADDING_X * 2)
+    val firstLineTypeface = android.graphics.Typeface.create(
+      android.graphics.Typeface.MONOSPACE,
+      android.graphics.Typeface.BOLD
+    )
+    val standardTypeface = android.graphics.Typeface.create(
+      android.graphics.Typeface.MONOSPACE,
+      android.graphics.Typeface.NORMAL
+    )
+    val requestedFirstLineTextSize = if (lines.size <= 7) 18f else 16f
+    val requestedStandardTextSize = if (lines.size <= 7) 14f else 12f
+    val lineGap = 0.5f
+
+    paint.textSize = requestedFirstLineTextSize
+    paint.typeface = firstLineTypeface
+    val requestedFirstMetrics = paint.fontMetrics
+    paint.textSize = requestedStandardTextSize
+    paint.typeface = standardTypeface
+    val requestedStandardMetrics = paint.fontMetrics
+    val requestedGlyphHeight =
+      (-requestedFirstMetrics.ascent + requestedFirstMetrics.descent) +
+        ((lines.size - 1).coerceAtLeast(0) *
+          (-requestedStandardMetrics.ascent + requestedStandardMetrics.descent))
+    val availableGlyphHeight =
+      LABEL_WIDTH_DOTS - (LABEL_PADDING_Y * 2) - ((lines.size - 1).coerceAtLeast(0) * lineGap)
+    val typeScale = if (requestedGlyphHeight > 0f) {
+      minOf(1f, availableGlyphHeight / requestedGlyphHeight)
+    } else {
+      1f
+    }
+    val firstLineTextSize = requestedFirstLineTextSize * typeScale
+    val standardTextSize = requestedStandardTextSize * typeScale
+
+    paint.textSize = firstLineTextSize
+    paint.typeface = firstLineTypeface
+    val firstMetrics = paint.fontMetrics
+    paint.textSize = standardTextSize
+    paint.typeface = standardTypeface
+    val standardMetrics = paint.fontMetrics
+    var baseline = LABEL_PADDING_Y.toFloat() - firstMetrics.ascent
     lines.forEachIndexed { index, line ->
-      paint.textSize = if (index == 0) 12f else 9f
-      paint.typeface = android.graphics.Typeface.create(
-        android.graphics.Typeface.MONOSPACE,
-        if (index == 0) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL
-      )
+      paint.textSize = if (index == 0) firstLineTextSize else standardTextSize
+      paint.typeface = if (index == 0) firstLineTypeface else standardTypeface
       canvas.drawText(
         ellipsizeLine(line, paint, maxWidth),
         LABEL_PADDING_X.toFloat(),
         baseline.toFloat(),
         paint
       )
-      baseline += if (index == 0) firstLineHeight else standardLineHeight
+      if (index < lines.lastIndex) {
+        val metrics = if (index == 0) firstMetrics else standardMetrics
+        baseline += metrics.descent + lineGap - standardMetrics.ascent
+      }
     }
-    return bitmap
+    return Bitmap.createBitmap(
+      logicalBitmap,
+      0,
+      0,
+      logicalBitmap.width,
+      logicalBitmap.height,
+      Matrix().apply { postRotate(90f) },
+      true
+    )
   }
 
   private fun ellipsizeLine(line: String, paint: Paint, maxWidth: Int): String {
@@ -1086,8 +1133,9 @@ class PriceTagPrinterModule : Module() {
 
     // 12 mm at the D11's 203 DPI print head is approximately 96 thermal dots.
     private const val LABEL_WIDTH_DOTS = 96
+    // ~50 mm of printable length gives the card details a landscape layout.
+    private const val LABEL_LENGTH_DOTS = 400
     private const val LABEL_PADDING_X = 4
     private const val LABEL_PADDING_Y = 6
-    private const val MIN_LABEL_HEIGHT = 112
   }
 }
