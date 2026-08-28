@@ -5,3 +5,4 @@
 - [GitHub Actions access limits](github-actions-access-limits.md) — The connector cannot edit workflow paths or read protected job logs in this environment.
 - [N12 BLE readiness](n12-ble-readiness.md) — Treat MTU negotiation and no-response write callbacks as optional on Android BLE printers.
 - [TCGplayer inventory sync](tcgplayer-inventory-sync.md) — Use a seller CSV round-trip; preserve TCGplayer fields and change only quantity additions.
+- [GitHub HTML upload filtering](github-html-upload-filtering.md) — Connector writes may reject HTML payloads; keep the Vite entry marker-based and generate its document during transform.
