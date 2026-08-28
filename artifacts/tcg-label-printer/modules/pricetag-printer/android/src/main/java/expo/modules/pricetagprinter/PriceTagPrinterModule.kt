@@ -503,8 +503,9 @@ class PriceTagPrinterModule : Module() {
     /*
      * The D11 consumes one bitmap row across the 96-dot print head and advances
      * the tape for each row. Render the label in its natural landscape
-     * orientation first, then rotate it into that transport coordinate system.
-     * This keeps text horizontal along the long edge of the 12 mm tape.
+     * orientation first, then rotate it counter-clockwise into that transport
+     * coordinate system. Android's positive 90° transform reverses the D11
+     * reading direction, so the first character must lead the feed instead.
      */
     val logicalBitmap = Bitmap.createBitmap(
       LABEL_LENGTH_DOTS,
@@ -576,7 +577,7 @@ class PriceTagPrinterModule : Module() {
       0,
       logicalBitmap.width,
       logicalBitmap.height,
-      Matrix().apply { postRotate(90f) },
+      Matrix().apply { postRotate(-90f) },
       true
     )
   }
