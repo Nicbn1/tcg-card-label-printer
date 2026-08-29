@@ -36,6 +36,14 @@ class D11ProtocolTest {
   }
 
   @Test
+  fun `counter clockwise transport mapping preserves all label corners`() {
+    assertEquals(Pair(0, 399), D11Protocol.counterClockwiseTransportCoordinates(0, 0, 400))
+    assertEquals(Pair(95, 399), D11Protocol.counterClockwiseTransportCoordinates(0, 95, 400))
+    assertEquals(Pair(0, 0), D11Protocol.counterClockwiseTransportCoordinates(399, 0, 400))
+    assertEquals(Pair(95, 0), D11Protocol.counterClockwiseTransportCoordinates(399, 95, 400))
+  }
+
+  @Test
   fun `no response delivery stays transport queued until status is received`() {
     val delivery = D11Protocol.deliveryMetadata(
       packetCount = 9,

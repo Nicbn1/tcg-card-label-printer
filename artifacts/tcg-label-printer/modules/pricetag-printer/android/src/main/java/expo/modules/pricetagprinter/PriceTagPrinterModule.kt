@@ -14,7 +14,6 @@ import android.bluetooth.le.ScanResult
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.Matrix
 import android.graphics.Paint
 import android.os.Build
 import android.os.Handler
@@ -503,9 +502,10 @@ class PriceTagPrinterModule : Module() {
     /*
      * The D11 consumes one bitmap row across the 96-dot print head and advances
      * the tape for each row. Render the label in its natural landscape
-     * orientation first, then rotate it counter-clockwise into that transport
-     * coordinate system. Android's positive 90° transform reverses the D11
-     * reading direction, so the first character must lead the feed instead.
+     * orientation first, then map every pixel counter-clockwise into that
+     * transport coordinate system. Avoid Bitmap.createBitmap's filtered
+     * negative-angle transform here: the D11 needs an exact opaque 96 × 400
+     * raster and has printed fully blank pages from that transformed bitmap.
      */
     val logicalBitmap = Bitmap.createBitmap(
       LABEL_LENGTH_DOTS,
@@ -571,15 +571,26 @@ class PriceTagPrinterModule : Module() {
         baseline += metrics.descent + lineGap - standardMetrics.ascent
       }
     }
-    return Bitmap.createBitmap(
-      logicalBitmap,
-      0,
-      0,
-      logicalBitmap.width,
-      logicalBitmap.height,
-      Matrix().apply { postRotate(-90f) },
-      true
+    val transportBitmap = Bitmap.createBitmap(
+      LABEL_WIDTH_DOTS,
+      LABEL_LENGTH_DOTS,
+      Bitmap.Config.ARGB_8888
     )
+    for (logicalY in 0 until logicalBitmap.height) {
+      for (logicalX in 0 until logicalBitmap.width) {
+        val (transportX, transportY) = D11Protocol.counterClockwiseTransportCoordinates(
+          logicalX = logicalX,
+          logicalY = logicalY,
+          logicalWidth = logicalBitmap.width,
+        )
+        transportBitmap.setPixel(
+          transportX,
+          transportY,
+          logicalBitmap.getPixel(logicalX, logicalY),
+        )
+      }
+    }
+    return transportBitmap
   }
 
   private fun ellipsizeLine(line: String, paint: Paint, maxWidth: Int): String {

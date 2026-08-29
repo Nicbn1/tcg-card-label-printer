@@ -41,6 +41,16 @@ internal object D11Protocol {
   fun u16(value: Int): ByteArray =
     byteArrayOf(((value shr 8) and 0xFF).toByte(), (value and 0xFF).toByte())
 
+  /**
+   * Maps a landscape label pixel into the D11's print-head coordinate system
+   * without relying on Android bitmap rotation or filtering.
+   */
+  fun counterClockwiseTransportCoordinates(
+    logicalX: Int,
+    logicalY: Int,
+    logicalWidth: Int,
+  ): Pair<Int, Int> = Pair(logicalY, logicalWidth - 1 - logicalX)
+
   fun buildFrame(command: Int, data: ByteArray): ByteArray {
     require(data.size <= 0xFF) { "NIIMBOT D11 packet data exceeds 255 bytes." }
     var checksum = command xor data.size
