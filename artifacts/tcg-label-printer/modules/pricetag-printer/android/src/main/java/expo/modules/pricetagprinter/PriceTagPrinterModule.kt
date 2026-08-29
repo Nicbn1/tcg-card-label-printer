@@ -7,7 +7,6 @@ import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCallback
 import android.bluetooth.BluetoothGattCharacteristic
-import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
@@ -54,7 +53,6 @@ class PriceTagPrinterModule : Module() {
   private var connectedAddress: String? = null
   private var negotiatedMtu = DEFAULT_ATT_MTU
   private var statusNotificationsEnabled = false
-  private var statusNotificationSetupPending = false
   private var notificationBuffer = byteArrayOf()
   private var lastD11StatusPage: Int? = null
   private val printRejection = D11PrintRejectionLatch()
@@ -419,9 +417,8 @@ class PriceTagPrinterModule : Module() {
         lastD11StatusPage = null
       }
       job.frames.forEach { frame ->
-        queueD11Write(frame)
+        sendD11Frame(frame)
         throwIfD11PrintRejected()
-        delay(PACKET_DELAY_MS)
       }
       throwIfD11PrintRejected()
 
@@ -644,6 +641,24 @@ class PriceTagPrinterModule : Module() {
     }
   }
 
+  /**
+   * Sends a complete D11 frame as ordered chunks. The D11 parser reassembles
+   * the raw characteristic stream, so labels do not need a negotiated MTU.
+   */
+  @SuppressLint("MissingPermission")
+  private suspend fun sendD11Frame(frame: ByteArray) {
+    val chunkSize = synchronized(stateLock) {
+      (negotiatedMtu - ATT_PROTOCOL_OVERHEAD).coerceAtLeast(1)
+    }
+    var offset = 0
+    while (offset < frame.size) {
+      val end = minOf(offset + chunkSize, frame.size)
+      queueD11Write(frame.copyOfRange(offset, end))
+      offset = end
+      delay(PACKET_DELAY_MS)
+    }
+  }
+
   @SuppressLint("MissingPermission")
   private fun queueD11Write(frame: ByteArray) {
     val activeGatt: BluetoothGatt
@@ -780,7 +795,6 @@ class PriceTagPrinterModule : Module() {
         notificationBuffer = byteArrayOf()
         lastD11StatusPage = null
         statusNotificationsEnabled = false
-        statusNotificationSetupPending = false
       }
       /*
        * D11 status notifications are optional, while the descriptor write used
@@ -788,45 +802,6 @@ class PriceTagPrinterModule : Module() {
        * Android. Keep that optional operation out of the connection-critical
        * path and prepare the write-only print transport directly.
        */
-      requestD11Mtu(activeGatt)
-    }
-
-    @SuppressLint("MissingPermission")
-    override fun onDescriptorWrite(
-      activeGatt: BluetoothGatt,
-      descriptor: BluetoothGattDescriptor,
-      status: Int
-    ) {
-      if (!isCurrentGatt(activeGatt, attemptId) ||
-        descriptor.uuid != CLIENT_CHARACTERISTIC_CONFIG_UUID
-      ) return
-      val shouldRequestMtu = synchronized(stateLock) {
-        if (!statusNotificationSetupPending) {
-          false
-        } else {
-          statusNotificationSetupPending = false
-          statusNotificationsEnabled = status == BluetoothGatt.GATT_SUCCESS
-          true
-        }
-      }
-      if (shouldRequestMtu) requestD11Mtu(activeGatt)
-    }
-
-    override fun onMtuChanged(activeGatt: BluetoothGatt, mtu: Int, status: Int) {
-      if (!isCurrentGatt(activeGatt, attemptId)) return
-      if (status != BluetoothGatt.GATT_SUCCESS || mtu < MINIMUM_D11_MTU) {
-        closeConnection(
-          activeGatt,
-          IOException(
-            "D11_MTU_TOO_SMALL: The NIIMBOT D11 needs a larger Bluetooth packet size for labels. Reconnect and try again."
-          )
-        )
-        return
-      }
-      val output = synchronized(stateLock) {
-        negotiatedMtu = mtu
-        printerCharacteristic
-      } ?: return
       try {
         queueD11Write(buildD11Frame(CMD_CONNECT, byteArrayOf(0x01)))
       } catch (error: Throwable) {
@@ -854,34 +829,6 @@ class PriceTagPrinterModule : Module() {
         attemptId,
         characteristic,
         characteristic.value ?: byteArrayOf()
-      )
-    }
-  }
-
-  @SuppressLint("MissingPermission")
-  private fun enableStatusNotifications(
-    activeGatt: BluetoothGatt,
-    characteristic: BluetoothGattCharacteristic
-  ): Boolean {
-    if (characteristic.properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY == 0) return false
-    if (!activeGatt.setCharacteristicNotification(characteristic, true)) return false
-    val descriptor = characteristic.getDescriptor(CLIENT_CHARACTERISTIC_CONFIG_UUID) ?: return false
-    descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-    return try {
-      @Suppress("DEPRECATION")
-      activeGatt.writeDescriptor(descriptor)
-    } catch (_: SecurityException) {
-      false
-    }
-  }
-
-  @SuppressLint("MissingPermission")
-  private fun requestD11Mtu(activeGatt: BluetoothGatt) {
-    if (synchronized(stateLock) { gatt !== activeGatt }) return
-    if (!activeGatt.requestMtu(D11_REQUESTED_MTU)) {
-      closeConnection(
-        activeGatt,
-        IOException("D11_MTU_NEGOTIATION_FAILED: Android could not prepare the NIIMBOT D11 for label data.")
       )
     }
   }
@@ -1048,7 +995,6 @@ class PriceTagPrinterModule : Module() {
       connectedAddress = null
       negotiatedMtu = DEFAULT_ATT_MTU
       statusNotificationsEnabled = false
-      statusNotificationSetupPending = false
       notificationBuffer = byteArrayOf()
       lastD11StatusPage = null
     }
@@ -1077,9 +1023,6 @@ class PriceTagPrinterModule : Module() {
   companion object {
     private val D11_SERVICE_UUID: UUID = UUID.fromString("e7810a71-73ae-499d-8c15-faa9aef0c3f2")
     private val D11_CHARACTERISTIC_UUID: UUID = UUID.fromString("bef8d6c9-9c21-4c9e-b632-bd58c1009f9f")
-    private val CLIENT_CHARACTERISTIC_CONFIG_UUID: UUID =
-      UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
-
     private const val FRAME_HEAD: Byte = 0x55
     private const val FRAME_TAIL: Byte = 0xAA.toByte()
     private const val CMD_CONNECT = 0xC1
@@ -1101,8 +1044,6 @@ class PriceTagPrinterModule : Module() {
     private const val PRINT_DISPATCH_SETTLE_MS = 350L
     private const val GATT_RECONNECT_DELAY_MS = 250L
     private const val DEFAULT_ATT_MTU = 23
-    private const val D11_REQUESTED_MTU = 247
-    private const val MINIMUM_D11_MTU = 32
     private const val ATT_PROTOCOL_OVERHEAD = 3
     private const val MIN_D11_FRAME_SIZE = 7
     // 12 mm at the D11's 203 DPI print head is approximately 96 thermal dots.
