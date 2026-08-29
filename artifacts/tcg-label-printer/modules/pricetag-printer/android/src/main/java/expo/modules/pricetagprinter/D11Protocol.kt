@@ -9,7 +9,7 @@ import java.io.IOException
  * makes the D11 preflight contract testable without a phone or printer.
  */
 internal object D11Protocol {
-  const val NO_RESPONSE_WRITE_MODE = "no-response-queued"
+  const val STREAM_WRITE_MODE = "rfcomm-stream"
 
   private const val FRAME_HEAD: Byte = 0x55
   private const val FRAME_TAIL: Byte = 0xAA.toByte()
@@ -54,6 +54,16 @@ internal object D11Protocol {
   fun isD11DeviceName(name: String?): Boolean =
     name?.contains("D11", ignoreCase = true) == true
 
+  /**
+   * D11 units advertise BLE and classic serial addresses with the first two
+   * octets exchanged (for example 26:03:... over BLE and 03:26:... for SPP).
+   */
+  fun classicAddressForBle(address: String): String? {
+    val octets = address.trim().uppercase().split(":")
+    if (octets.size != 6 || octets.any { it.length != 2 || it.toIntOrNull(16) == null }) return null
+    return (listOf(octets[1], octets[0]) + octets.drop(2)).joinToString(":")
+  }
+
   fun buildFrame(command: Int, data: ByteArray): ByteArray {
     require(data.size <= 0xFF) { "NIIMBOT D11 packet data exceeds 255 bytes." }
     var checksum = command xor data.size
@@ -82,7 +92,7 @@ internal object D11Protocol {
     completedPageCount: Int?
   ): Map<String, Any?> = mapOf(
     "packetCount" to packetCount,
-    "writeMode" to NO_RESPONSE_WRITE_MODE,
+    "writeMode" to STREAM_WRITE_MODE,
     "packetBytes" to packetBytes,
     "statusReceived" to statusReceived,
     "completedPageCount" to completedPageCount

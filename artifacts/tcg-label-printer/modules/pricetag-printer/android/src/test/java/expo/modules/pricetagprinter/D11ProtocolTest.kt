@@ -52,6 +52,15 @@ class D11ProtocolTest {
   }
 
   @Test
+  fun `BLE discovery address maps to the D11 classic serial address`() {
+    assertEquals(
+      "03:26:03:C3:F9:11",
+      D11Protocol.classicAddressForBle("26:03:03:c3:f9:11"),
+    )
+    assertEquals(null, D11Protocol.classicAddressForBle("not-an-address"))
+  }
+
+  @Test
   fun `no response delivery stays transport queued until status is received`() {
     val delivery = D11Protocol.deliveryMetadata(
       packetCount = 9,
@@ -60,7 +69,7 @@ class D11ProtocolTest {
       completedPageCount = null,
     )
 
-    assertEquals("no-response-queued", delivery["writeMode"])
+    assertEquals("rfcomm-stream", delivery["writeMode"])
     assertFalse(delivery["statusReceived"] as Boolean)
     assertEquals(null, delivery["completedPageCount"])
   }

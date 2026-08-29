@@ -8,6 +8,7 @@ import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCallback
 import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothProfile
+import android.bluetooth.BluetoothSocket
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.graphics.Bitmap
@@ -35,13 +36,13 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 /**
- * BLE bitmap transport for the 203 DPI NIIMBOT D11.
+ * Bitmap transport for the 203 DPI NIIMBOT D11.
  *
  * The D11 uses the Niimbot V3 packet protocol rather than ESC/POS or the
  * PrintMaster protocol used by the former N12 printer. Jobs are encoded as
- * framed page and 1-bit bitmap-row commands sent over a write-without-response
- * characteristic. Printer status arrives over notifications on the same GATT
- * characteristic when the device provides it.
+ * framed page and 1-bit bitmap-row commands sent over the printer's classic
+ * RFCOMM serial channel. BLE remains useful for discovery, but RFCOMM avoids
+ * the GATT MTU limit that otherwise truncates 25-byte bitmap-row frames.
  */
 class PriceTagPrinterModule : Module() {
   private val mainHandler = Handler(Looper.getMainLooper())
@@ -50,6 +51,7 @@ class PriceTagPrinterModule : Module() {
 
   private var gatt: BluetoothGatt? = null
   private var printerCharacteristic: BluetoothGattCharacteristic? = null
+  private var classicSocket: BluetoothSocket? = null
   private var connectedAddress: String? = null
   private var negotiatedMtu = DEFAULT_ATT_MTU
   private var statusNotificationsEnabled = false
@@ -100,7 +102,7 @@ class PriceTagPrinterModule : Module() {
     AsyncFunction("getConnectionStateAsync") {
       synchronized(stateLock) {
         mapOf(
-          "connected" to (gatt != null && printerCharacteristic != null),
+          "connected" to (classicSocket?.isConnected == true),
           "address" to connectedAddress
         )
       }
@@ -257,139 +259,74 @@ class PriceTagPrinterModule : Module() {
       )
     }
 
-    // Android can retain a GATT object after a sleeping printer drops its radio
-    // link. Verify the system state before treating the existing session as live.
-    val looksConnected = synchronized(stateLock) {
-      gatt != null && printerCharacteristic != null && connectedAddress == normalizedAddress
+    val existingSocket = synchronized(stateLock) {
+      classicSocket?.takeIf { it.isConnected && connectedAddress == normalizedAddress }
     }
-    if (looksConnected) {
-      val manager = appContext.reactContext?.applicationContext
-        ?.getSystemService(android.content.Context.BLUETOOTH_SERVICE) as? android.bluetooth.BluetoothManager
+    if (existingSocket != null) {
+      return mapOf("name" to "NIIMBOT D11", "address" to normalizedAddress)
+    }
+
+    closeConnection()
+    val adapter = bluetoothAdapter()
+    adapter.cancelDiscovery()
+    var lastFailure: Throwable? = null
+    for (candidateAddress in classicAddressCandidates(adapter, normalizedAddress)) {
       val device = try {
-        BluetoothAdapter.getDefaultAdapter()?.getRemoteDevice(normalizedAddress)
-      } catch (_: Throwable) {
-        null
+        adapter.getRemoteDevice(candidateAddress)
+      } catch (error: IllegalArgumentException) {
+        lastFailure = error
+        continue
       }
-      val actuallyConnected = device != null &&
-        manager?.getConnectionState(device, BluetoothProfile.GATT) == BluetoothProfile.STATE_CONNECTED
-      if (actuallyConnected) {
-        return mapOf("name" to "NIIMBOT D11", "address" to normalizedAddress)
-      }
-      closeConnection(
-        IOException("D11_DISCONNECTED: The NIIMBOT D11 disconnected. Wake it and reconnect before printing.")
+      val socketFactories = listOf<() -> BluetoothSocket>(
+        { device.createInsecureRfcommSocketToServiceRecord(SERIAL_PORT_PROFILE_UUID) },
+        { device.createRfcommSocketToServiceRecord(SERIAL_PORT_PROFILE_UUID) },
       )
-    }
-
-    val connectionAttempt = synchronized(stateLock) {
-      if (reservedConnectionAttemptId != null || connectionContinuation != null) {
-        throw IllegalStateException(
-          "D11_CONNECTION_IN_PROGRESS: Wait for the current NIIMBOT D11 connection attempt to finish."
-        )
-      }
-      connectionAttemptId += 1
-      reservedConnectionAttemptId = connectionAttemptId
-      Pair(connectionAttemptId, gatt != null)
-    }
-
-    val adapter = try {
-      bluetoothAdapter()
-    } catch (error: Throwable) {
-      releaseConnectionReservation(connectionAttempt.first)
-      throw error
-    }
-    val device = try {
-      adapter.getRemoteDevice(normalizedAddress)
-    } catch (error: IllegalArgumentException) {
-      releaseConnectionReservation(connectionAttempt.first)
-      throw IllegalArgumentException(
-        "D11_ADDRESS_INVALID: Select the NIIMBOT D11 from the nearby-printer list.",
-        error
-      )
-    }
-
-    if (connectionAttempt.second) {
-      closeConnection(
-        IOException("D11_CONNECTION_REPLACED: The previous printer connection was closed to start a new one."),
-        preserveConnectionReservation = true
-      )
-      delay(GATT_RECONNECT_DELAY_MS)
-    }
-
-    val connection = withTimeoutOrNull(CONNECTION_TIMEOUT_MS) {
-      suspendCancellableCoroutine { continuation ->
-        val attemptId = connectionAttempt.first
-        val registered = synchronized(stateLock) {
-          if (reservedConnectionAttemptId != attemptId) {
-            false
-          } else {
-            pendingConnectionAttemptId = attemptId
-            connectionContinuation = continuation
+      for (createSocket in socketFactories) {
+        val socket = try {
+          createSocket()
+        } catch (error: Throwable) {
+          lastFailure = error
+          continue
+        }
+        try {
+          socket.connect()
+          synchronized(stateLock) {
+            classicSocket = socket
             connectedAddress = normalizedAddress
-            true
+            statusNotificationsEnabled = false
+          }
+          return mapOf(
+            "name" to (device.name ?: "NIIMBOT D11"),
+            "address" to normalizedAddress,
+          )
+        } catch (error: Throwable) {
+          lastFailure = error
+          try {
+            socket.close()
+          } catch (_: IOException) {
+            // Continue with the next classic D11 address/socket mode.
           }
         }
-        if (!registered) {
-          continuation.resumeWithException(
-            IOException("D11_CONNECTION_CANCELLED: The NIIMBOT D11 connection attempt was cancelled.")
-          )
-          return@suspendCancellableCoroutine
-        }
-        val context = appContext.reactContext?.applicationContext
-        if (context == null) {
-          clearConnectionAttempt(continuation, attemptId)
-          continuation.resumeWithException(
-            IllegalStateException("D11_CONNECTION_UNAVAILABLE: Android could not create a Bluetooth connection.")
-          )
-          return@suspendCancellableCoroutine
-        }
-        val createdGatt = try {
-          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            device.connectGatt(context, false, createGattCallback(attemptId), BluetoothDevice.TRANSPORT_LE)
-          } else {
-            device.connectGatt(context, false, createGattCallback(attemptId))
-          }
-        } catch (error: SecurityException) {
-          clearConnectionAttempt(continuation, attemptId)
-          continuation.resumeWithException(
-            IllegalStateException(
-              "BLUETOOTH_PERMISSION_REQUIRED: Allow Nearby devices access to connect to the NIIMBOT D11.",
-              error
-            )
-          )
-          return@suspendCancellableCoroutine
-        }
-        if (createdGatt == null) {
-          clearConnectionAttempt(continuation, attemptId)
-          continuation.resumeWithException(
-            IOException("D11_CONNECTION_FAILED: Android could not open a Bluetooth connection to the selected printer.")
-          )
-        } else {
-          val shouldClose = synchronized(stateLock) {
-            if (pendingConnectionAttemptId == attemptId && gatt == null) {
-              gatt = createdGatt
-              false
-            } else {
-              gatt !== createdGatt
-            }
-          }
-          if (shouldClose) {
-            try {
-              createdGatt.disconnect()
-              createdGatt.close()
-            } catch (_: SecurityException) {
-              // This attempt is already being cleaned up.
-            }
-          }
-        }
-        continuation.invokeOnCancellation { closeConnection() }
       }
     }
-    return connection ?: run {
-      closeConnection()
-      throw IOException(
-        "D11_CONNECTION_TIMED_OUT: The NIIMBOT D11 did not finish connecting. Wake it and try again."
-      )
-    }
+    throw IOException(
+      "D11_CLASSIC_CONNECTION_FAILED: Pair the NIIMBOT D11 in Android Bluetooth settings, keep it awake, then reconnect in PriceTag.",
+      lastFailure,
+    )
+  }
+
+  @SuppressLint("MissingPermission")
+  private fun classicAddressCandidates(
+    adapter: BluetoothAdapter,
+    discoveredAddress: String,
+  ): List<String> {
+    val candidates = linkedSetOf<String>()
+    adapter.bondedDevices
+      .filter { isD11Device(it) && it.type != BluetoothDevice.DEVICE_TYPE_LE }
+      .forEach { candidates += it.address.uppercase() }
+    D11Protocol.classicAddressForBle(discoveredAddress)?.let { candidates += it }
+    candidates += discoveredAddress
+    return candidates.toList()
   }
 
   private suspend fun printLabel(payload: Map<String, Any?>): Map<String, Any?> {
@@ -406,7 +343,7 @@ class PriceTagPrinterModule : Module() {
       if (lines.isEmpty()) {
         throw IllegalArgumentException("D11_LABEL_EMPTY: This label has no printable fields.")
       }
-      val hasConnection = synchronized(stateLock) { gatt != null && printerCharacteristic != null }
+      val hasConnection = synchronized(stateLock) { classicSocket?.isConnected == true }
       if (!hasConnection) {
         throw IllegalStateException(
           "PRINTER_NOT_CONNECTED: Select and connect your NIIMBOT D11 before printing."
@@ -646,6 +583,22 @@ class PriceTagPrinterModule : Module() {
 
   @SuppressLint("MissingPermission")
   private fun queueD11Write(frame: ByteArray) {
+    val socket = synchronized(stateLock) { classicSocket }
+    if (socket?.isConnected == true) {
+      try {
+        socket.outputStream.write(frame)
+        socket.outputStream.flush()
+        return
+      } catch (error: IOException) {
+        closeConnection(
+          IOException(
+            "D11_DISCONNECTED: The NIIMBOT D11 serial connection was lost. Wake it and reconnect before printing.",
+            error,
+          )
+        )
+        throw error
+      }
+    }
     val activeGatt: BluetoothGatt
     val characteristic: BluetoothGattCharacteristic
     val mtu: Int
@@ -1000,6 +953,7 @@ class PriceTagPrinterModule : Module() {
     val toFailConnection: CancellableContinuation<Map<String, String>>?
     val toFailStatus: CancellableContinuation<Int>?
     val activeGatt: BluetoothGatt?
+    val activeSocket: BluetoothSocket?
     synchronized(stateLock) {
       if (expectedGatt != null && gatt !== expectedGatt) return
       toFailConnection = connectionContinuation
@@ -1009,7 +963,9 @@ class PriceTagPrinterModule : Module() {
       pendingConnectionAttemptId = null
       if (!preserveConnectionReservation) reservedConnectionAttemptId = null
       activeGatt = gatt
+      activeSocket = classicSocket
       gatt = null
+      classicSocket = null
       printerCharacteristic = null
       connectedAddress = null
       negotiatedMtu = DEFAULT_ATT_MTU
@@ -1022,6 +978,11 @@ class PriceTagPrinterModule : Module() {
       activeGatt?.close()
     } catch (_: SecurityException) {
       // Android is already releasing the Bluetooth session.
+    }
+    try {
+      activeSocket?.close()
+    } catch (_: IOException) {
+      // Android is already releasing the serial session.
     }
     if (reason != null) {
       if (toFailConnection?.isActive == true) toFailConnection.resumeWithException(reason)
@@ -1042,6 +1003,7 @@ class PriceTagPrinterModule : Module() {
   companion object {
     private val D11_SERVICE_UUID: UUID = UUID.fromString("e7810a71-73ae-499d-8c15-faa9aef0c3f2")
     private val D11_CHARACTERISTIC_UUID: UUID = UUID.fromString("bef8d6c9-9c21-4c9e-b632-bd58c1009f9f")
+    private val SERIAL_PORT_PROFILE_UUID: UUID = UUID.fromString("00001101-0000-1000-8000-00805f9b34fb")
     private const val FRAME_HEAD: Byte = 0x55
     private const val FRAME_TAIL: Byte = 0xAA.toByte()
     private const val CMD_CONNECT = 0xC1
