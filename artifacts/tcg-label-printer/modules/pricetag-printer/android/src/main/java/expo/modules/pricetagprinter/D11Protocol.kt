@@ -51,6 +51,9 @@ internal object D11Protocol {
     logicalWidth: Int,
   ): Pair<Int, Int> = Pair(logicalY, logicalWidth - 1 - logicalX)
 
+  fun isD11DeviceName(name: String?): Boolean =
+    name?.contains("D11", ignoreCase = true) == true
+
   fun buildFrame(command: Int, data: ByteArray): ByteArray {
     require(data.size <= 0xFF) { "NIIMBOT D11 packet data exceeds 255 bytes." }
     var checksum = command xor data.size

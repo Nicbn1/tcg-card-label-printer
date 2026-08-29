@@ -176,13 +176,17 @@ class PriceTagPrinterModule : Module() {
     // The D11 may stop advertising after Android pairs with it. Include bonded
     // devices so that selecting it again does not require removing the pairing.
     adapter.bondedDevices.forEach { device ->
-      devices[device.address] = deviceToMap(device)
+      if (isD11Device(device)) {
+        devices[device.address] = deviceToMap(device)
+      }
     }
 
     return suspendCancellableCoroutine { continuation ->
       val callback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
-          result.device?.let { device -> devices[device.address] = deviceToMap(device) }
+          result.device?.let { device ->
+            if (isD11Device(device)) devices[device.address] = deviceToMap(device)
+          }
         }
 
         override fun onScanFailed(errorCode: Int) {
@@ -216,13 +220,7 @@ class PriceTagPrinterModule : Module() {
         }
         if (continuation.isActive) {
           val discovered = synchronized(devices) {
-            devices.values.sortedWith(
-              compareByDescending<Map<String, String>> { device ->
-                device["name"]?.startsWith("D11", ignoreCase = true) == true
-              }.thenByDescending { device ->
-                device["name"]?.startsWith("D1", ignoreCase = true) == true
-              }.thenBy { device -> device["name"]?.lowercase() ?: "" }
-            )
+            devices.values.sortedBy { device -> device["name"]?.lowercase() ?: "" }
           }
           continuation.resume(discovered)
         }
@@ -238,6 +236,10 @@ class PriceTagPrinterModule : Module() {
       }
     }
   }
+
+  @SuppressLint("MissingPermission")
+  private fun isD11Device(device: BluetoothDevice): Boolean =
+    D11Protocol.isD11DeviceName(device.name)
 
   @SuppressLint("MissingPermission")
   private fun deviceToMap(device: BluetoothDevice): Map<String, String> =

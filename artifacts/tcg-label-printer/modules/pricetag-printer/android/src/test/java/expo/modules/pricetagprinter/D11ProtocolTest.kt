@@ -44,6 +44,14 @@ class D11ProtocolTest {
   }
 
   @Test
+  fun `device discovery only accepts D11 names`() {
+    assertEquals(true, D11Protocol.isD11DeviceName("NIIMBOT D11"))
+    assertEquals(true, D11Protocol.isD11DeviceName("D11-ABC123"))
+    assertEquals(false, D11Protocol.isD11DeviceName("NIIMBOT N12"))
+    assertEquals(false, D11Protocol.isD11DeviceName(null))
+  }
+
+  @Test
   fun `no response delivery stays transport queued until status is received`() {
     val delivery = D11Protocol.deliveryMetadata(
       packetCount = 9,
