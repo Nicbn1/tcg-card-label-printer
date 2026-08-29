@@ -419,8 +419,9 @@ class PriceTagPrinterModule : Module() {
         lastD11StatusPage = null
       }
       job.frames.forEach { frame ->
-        sendD11Frame(frame)
+        queueD11Write(frame)
         throwIfD11PrintRejected()
+        delay(PACKET_DELAY_MS)
       }
       throwIfD11PrintRejected()
 
@@ -643,24 +644,6 @@ class PriceTagPrinterModule : Module() {
     }
   }
 
-  /**
-   * Sends a complete D11 frame as ordered chunks. The D11 parser reassembles
-   * the raw characteristic stream, so labels do not need a negotiated MTU.
-   */
-  @SuppressLint("MissingPermission")
-  private suspend fun sendD11Frame(frame: ByteArray) {
-    val chunkSize = synchronized(stateLock) {
-      (negotiatedMtu - ATT_PROTOCOL_OVERHEAD).coerceAtLeast(1)
-    }
-    var offset = 0
-    while (offset < frame.size) {
-      val end = minOf(offset + chunkSize, frame.size)
-      queueD11Write(frame.copyOfRange(offset, end))
-      offset = end
-      delay(PACKET_DELAY_MS)
-    }
-  }
-
   @SuppressLint("MissingPermission")
   private fun queueD11Write(frame: ByteArray) {
     val activeGatt: BluetoothGatt
@@ -799,18 +782,29 @@ class PriceTagPrinterModule : Module() {
         statusNotificationsEnabled = false
       }
       /*
-       * D11 status notifications are optional, while the descriptor write used
-       * to enable them is a common source of immediate GATT disconnects on
-       * Android. Keep that optional operation out of the connection-critical
-       * path and prepare the write-only print transport directly.
+       * A D11 bitmap row is a 25-byte protocol frame and must remain one
+       * characteristic write. Request only the smallest MTU needed for that
+       * frame; large MTU requests can destabilize older D11 firmware.
        */
-      try {
-        queueD11Write(buildD11Frame(CMD_CONNECT, byteArrayOf(0x01)))
-      } catch (error: Throwable) {
-        closeConnection(activeGatt, error)
-        return
+      val mtuRequestQueued = try {
+        activeGatt.requestMtu(D11_REQUESTED_MTU)
+      } catch (_: SecurityException) {
+        false
       }
-      scheduleConnectionCompletion(activeGatt, attemptId, PRINTER_READY_DELAY_MS)
+      if (mtuRequestQueued) {
+        scheduleMtuFallback(activeGatt, attemptId)
+      } else {
+        finishD11ConnectionSetup(activeGatt, attemptId)
+      }
+    }
+
+    override fun onMtuChanged(activeGatt: BluetoothGatt, mtu: Int, status: Int) {
+      if (!isCurrentGatt(activeGatt, attemptId)) return
+      val shouldFinishSetup = synchronized(stateLock) {
+        if (status == BluetoothGatt.GATT_SUCCESS) negotiatedMtu = mtu
+        pendingConnectionAttemptId == attemptId && connectionContinuation != null
+      }
+      if (shouldFinishSetup) finishD11ConnectionSetup(activeGatt, attemptId)
     }
 
     override fun onCharacteristicChanged(
@@ -917,6 +911,29 @@ class PriceTagPrinterModule : Module() {
       }
       if (canComplete) completeConnection(activeGatt)
     }, delayMs)
+  }
+
+  @SuppressLint("MissingPermission")
+  private fun finishD11ConnectionSetup(activeGatt: BluetoothGatt, attemptId: Long) {
+    val canFinish = synchronized(stateLock) {
+      gatt === activeGatt &&
+        pendingConnectionAttemptId == attemptId &&
+        connectionContinuation != null
+    }
+    if (!canFinish) return
+    try {
+      queueD11Write(buildD11Frame(CMD_CONNECT, byteArrayOf(0x01)))
+    } catch (error: Throwable) {
+      closeConnection(activeGatt, error)
+      return
+    }
+    scheduleConnectionCompletion(activeGatt, attemptId, PRINTER_READY_DELAY_MS)
+  }
+
+  private fun scheduleMtuFallback(activeGatt: BluetoothGatt, attemptId: Long) {
+    mainHandler.postDelayed({
+      finishD11ConnectionSetup(activeGatt, attemptId)
+    }, MTU_CALLBACK_FALLBACK_MS)
   }
 
   private fun isCurrentGatt(candidate: BluetoothGatt, attemptId: Long): Boolean =
@@ -1046,6 +1063,8 @@ class PriceTagPrinterModule : Module() {
     private const val PRINT_DISPATCH_SETTLE_MS = 350L
     private const val GATT_RECONNECT_DELAY_MS = 250L
     private const val DEFAULT_ATT_MTU = 23
+    private const val D11_REQUESTED_MTU = 32
+    private const val MTU_CALLBACK_FALLBACK_MS = 750L
     private const val ATT_PROTOCOL_OVERHEAD = 3
     private const val MIN_D11_FRAME_SIZE = 7
     // 12 mm at the D11's 203 DPI print head is approximately 96 thermal dots.

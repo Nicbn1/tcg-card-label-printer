@@ -34,7 +34,7 @@ internal object D11Protocol {
       buildFrame(CMD_PRINT_START, byteArrayOf(0x01)),
       buildFrame(CMD_PRINT_CLEAR, byteArrayOf(0x01)),
       buildFrame(CMD_PAGE_START, byteArrayOf(0x01)),
-      buildFrame(CMD_SET_PAGE_SIZE, u16(width) + u16(height)),
+      buildFrame(CMD_SET_PAGE_SIZE, u16(height) + u16(width)),
       buildFrame(CMD_PRINT_QUANTITY, u16(quantity)),
     )
 

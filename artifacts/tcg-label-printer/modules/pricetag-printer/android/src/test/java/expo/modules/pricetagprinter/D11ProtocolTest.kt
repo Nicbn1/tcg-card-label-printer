@@ -17,7 +17,7 @@ class D11ProtocolTest {
         "55 55 01 01 01 01 AA AA",
         "55 55 20 01 01 20 AA AA",
         "55 55 03 01 01 03 AA AA",
-        "55 55 13 04 00 60 01 90 E6 AA AA",
+        "55 55 13 04 01 90 00 60 E6 AA AA",
         "55 55 15 02 00 01 16 AA AA",
       ),
       frames.map(::hex),
