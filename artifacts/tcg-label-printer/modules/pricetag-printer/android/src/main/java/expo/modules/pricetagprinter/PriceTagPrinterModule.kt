@@ -774,25 +774,21 @@ class PriceTagPrinterModule : Module() {
         )
         return
       }
-      val canEnableStatusNotifications = (
-        output.properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY
-        ) != 0 && output.getDescriptor(CLIENT_CHARACTERISTIC_CONFIG_UUID) != null
       synchronized(stateLock) {
         printerCharacteristic = output
         negotiatedMtu = DEFAULT_ATT_MTU
         notificationBuffer = byteArrayOf()
         lastD11StatusPage = null
         statusNotificationsEnabled = false
-        statusNotificationSetupPending = canEnableStatusNotifications
+        statusNotificationSetupPending = false
       }
-      val notificationWriteQueued = canEnableStatusNotifications &&
-        enableStatusNotifications(activeGatt, output)
-      if (!notificationWriteQueued) {
-        synchronized(stateLock) {
-          statusNotificationSetupPending = false
-        }
-        requestD11Mtu(activeGatt)
-      }
+      /*
+       * D11 status notifications are optional, while the descriptor write used
+       * to enable them is a common source of immediate GATT disconnects on
+       * Android. Keep that optional operation out of the connection-critical
+       * path and prepare the write-only print transport directly.
+       */
+      requestD11Mtu(activeGatt)
     }
 
     @SuppressLint("MissingPermission")
