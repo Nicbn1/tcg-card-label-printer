@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from 'expo-router';
+import Constants from 'expo-constants';
 import { Feather } from '@expo/vector-icons';
 import { useColors } from '@/hooks/useColors';
 import {
@@ -312,6 +313,7 @@ export default function SettingsScreen() {
   ).length;
 
   const topPad = Platform.OS === 'web' ? 67 : insets.top;
+  const appVersion = Constants.expoConfig?.version ?? '1.0.0';
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
@@ -327,6 +329,20 @@ export default function SettingsScreen() {
       </View>
 
       <PrinterSetupCard />
+
+      <View style={[styles.buildCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+        <View style={[styles.buildIcon, { backgroundColor: colors.accent }]}>
+          <Feather name="tag" size={16} color={colors.primary} />
+        </View>
+        <View style={styles.buildCopy}>
+          <Text style={[styles.buildTitle, { color: colors.foreground, fontFamily: 'Inter_600SemiBold' }]}>
+            PriceTag
+          </Text>
+          <Text style={[styles.buildSubtitle, { color: colors.mutedForeground, fontFamily: 'Inter_400Regular' }]}>
+            App version {appVersion}
+          </Text>
+        </View>
+      </View>
 
       <View style={[styles.priceCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
         <View style={styles.priceHeader}>
@@ -909,6 +925,11 @@ const styles = StyleSheet.create({
   chipText: { fontSize: 11 },
   divider: { height: 1 },
   btBody: { fontSize: 13, lineHeight: 20 },
+  buildCard: { marginHorizontal: 16, marginBottom: 12, padding: 12, borderRadius: 12, borderWidth: 1, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  buildIcon: { width: 32, height: 32, borderRadius: 9, alignItems: 'center', justifyContent: 'center' },
+  buildCopy: { flex: 1 },
+  buildTitle: { fontSize: 13 },
+  buildSubtitle: { fontSize: 11, marginTop: 2 },
   priceCard: { marginHorizontal: 16, marginBottom: 18, padding: 14, borderRadius: 14, borderWidth: 1, gap: 13 },
   priceHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 10 },
   priceSub: { fontSize: 12, marginTop: 3 },

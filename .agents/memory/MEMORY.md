@@ -6,3 +6,5 @@
 - [N12 BLE readiness](n12-ble-readiness.md) — Treat MTU negotiation and no-response write callbacks as optional on Android BLE printers.
 - [TCGplayer inventory sync](tcgplayer-inventory-sync.md) — Use a seller CSV round-trip; preserve TCGplayer fields and change only quantity additions.
 - [GitHub HTML upload filtering](github-html-upload-filtering.md) — Connector writes may reject HTML payloads; keep the Vite entry marker-based and generate its document during transform.
+- [Workspace build ports](workspace-build-ports.md) — Full Expo static builds need Metro's preferred port free; pause the mockup Vite workflow first.
+- [APK build identity](apk-build-identity.md) — CI APKs use the monotonic workflow run number in Android versioning, Settings, filenames, and artifact metadata.
