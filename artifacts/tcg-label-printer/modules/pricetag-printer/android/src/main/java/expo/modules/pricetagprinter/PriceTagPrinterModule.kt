@@ -56,6 +56,7 @@ class PriceTagPrinterModule : Module() {
   private var negotiatedMtu = DEFAULT_ATT_MTU
   private var statusNotificationsEnabled = false
   private var notificationBuffer = byteArrayOf()
+  private var serialResponseBuffer = byteArrayOf()
   private var lastD11StatusPage: Int? = null
   private val printRejection = D11PrintRejectionLatch()
   private var connectionAttemptId = 0L
@@ -354,46 +355,49 @@ class PriceTagPrinterModule : Module() {
       synchronized(stateLock) {
         printRejection.reset()
         lastD11StatusPage = null
+        serialResponseBuffer = byteArrayOf()
       }
-      job.frames.forEach { frame ->
-        queueD11Write(frame)
+      job.frames.forEachIndexed { index, frame ->
+        val command = D11Protocol.command(frame)
+        if (index < job.preflightFrameCount || command == CMD_PAGE_END) {
+          sendD11CommandAndAwait(frame, D11Protocol.expectedResponseCommand(command))
+        } else {
+          queueD11Write(frame)
+        }
         throwIfD11PrintRejected()
         delay(PACKET_DELAY_MS)
       }
       throwIfD11PrintRejected()
 
-      val canRequestStatus = synchronized(stateLock) { statusNotificationsEnabled }
       var statusPacketsQueued = 0
       var receivedStatus = false
       var completedPageCount: Int? = null
-      if (canRequestStatus) {
-        for (attempt in 0 until PRINT_STATUS_ATTEMPTS) {
-          throwIfD11PrintRejected()
-          statusPacketsQueued += 1
-          val page = requestD11PrintStatus()
-          throwIfD11PrintRejected()
-          if (page != null) {
-            receivedStatus = true
-            completedPageCount = page
-            if (page >= 1) break
-          }
-          delay(PRINT_STATUS_POLL_DELAY_MS)
-        }
-      }
-
-      // The D11 task is explicitly closed even when status notifications are
-      // unavailable. The returned delivery object tells JS which confirmation
-      // was available instead of mistaking a no-response write for a printer ACK.
-      queueD11Write(buildD11Frame(CMD_PRINT_END, byteArrayOf(0x01)))
-      if (canRequestStatus) {
-        statusPacketsQueued += 1
-        val terminalPage = requestD11PrintStatus()
+      for (attempt in 0 until PRINT_STATUS_ATTEMPTS) {
         throwIfD11PrintRejected()
-        if (terminalPage != null) {
+        statusPacketsQueued += 1
+        val status = sendD11CommandAndAwait(
+          buildD11Frame(CMD_PRINT_STATUS, byteArrayOf(0x01)),
+          RESP_PRINT_STATUS,
+          requireSuccessByte = false,
+        )
+        if (status.data.size >= 2) {
+          val page = ((status.data[0].toInt() and 0xFF) shl 8) or
+            (status.data[1].toInt() and 0xFF)
           receivedStatus = true
-          completedPageCount = terminalPage
+          completedPageCount = page
+          if (page >= 1) break
         }
+        delay(PRINT_STATUS_POLL_DELAY_MS)
       }
+      if ((completedPageCount ?: 0) < 1) {
+        throw IOException(
+          "D11_PRINT_NOT_COMPLETED: The NIIMBOT D11 did not finish receiving the label bitmap."
+        )
+      }
+      sendD11CommandAndAwait(
+        buildD11Frame(CMD_PRINT_END, byteArrayOf(0x01)),
+        D11Protocol.expectedResponseCommand(CMD_PRINT_END),
+      )
       delay(PRINT_DISPATCH_SETTLE_MS)
       throwIfD11PrintRejected()
       return D11Protocol.deliveryMetadata(
@@ -432,7 +436,11 @@ class PriceTagPrinterModule : Module() {
       }
     }
     frames += buildD11Frame(CMD_PAGE_END, byteArrayOf(0x01))
-    return D11PrintJob(frames, frames.maxOf { it.size })
+    return D11PrintJob(
+      frames = frames,
+      maxFrameBytes = frames.maxOf { it.size },
+      preflightFrameCount = D11Protocol.preflightFrames(bitmap.width, bitmap.height).size,
+    )
   }
 
   private fun renderLabel(lines: List<String>): Bitmap {
@@ -633,6 +641,96 @@ class PriceTagPrinterModule : Module() {
       )
     }
   }
+
+  private suspend fun sendD11CommandAndAwait(
+    frame: ByteArray,
+    expectedResponseCommand: Int,
+    requireSuccessByte: Boolean = true,
+  ): D11Response {
+    queueD11Write(frame)
+    val response = awaitSerialD11Response(expectedResponseCommand)
+    if (requireSuccessByte && response.data.firstOrNull()?.toInt() == 0) {
+      throw IOException(
+        "D11_COMMAND_REJECTED: The NIIMBOT D11 rejected command 0x${D11Protocol.command(frame).toString(16)}."
+      )
+    }
+    return response
+  }
+
+  private suspend fun awaitSerialD11Response(expectedCommand: Int): D11Response {
+    val deadline = System.nanoTime() + (SERIAL_RESPONSE_TIMEOUT_MS * 1_000_000L)
+    while (System.nanoTime() < deadline) {
+      while (true) {
+        val response = pollSerialD11Response() ?: break
+        if (response.command == RESP_PRINT_ERROR) {
+          throw synchronized(stateLock) { printRejection.reject() }
+        }
+        if (response.command == expectedCommand) return response
+      }
+      val socket = synchronized(stateLock) { classicSocket }
+        ?: throw IOException("D11_DISCONNECTED: Reconnect the NIIMBOT D11 before printing.")
+      try {
+        val available = socket.inputStream.available()
+        if (available > 0) {
+          val incoming = ByteArray(minOf(available, SERIAL_READ_BUFFER_BYTES))
+          val count = socket.inputStream.read(incoming)
+          if (count > 0) {
+            synchronized(stateLock) {
+              serialResponseBuffer += incoming.copyOf(count)
+            }
+            continue
+          }
+        }
+      } catch (error: IOException) {
+        closeConnection(
+          IOException("D11_DISCONNECTED: The NIIMBOT D11 serial response was interrupted.", error)
+        )
+        throw error
+      }
+      delay(SERIAL_RESPONSE_POLL_MS)
+    }
+    throw IOException(
+      "D11_RESPONSE_TIMED_OUT: The NIIMBOT D11 did not acknowledge command 0x${expectedCommand.toString(16)}."
+    )
+  }
+
+  private fun pollSerialD11Response(): D11Response? =
+    synchronized(stateLock) {
+      while (serialResponseBuffer.size >= MIN_D11_FRAME_SIZE) {
+        val head = (0 until serialResponseBuffer.size - 1).firstOrNull { index ->
+          serialResponseBuffer[index] == FRAME_HEAD &&
+            serialResponseBuffer[index + 1] == FRAME_HEAD
+        } ?: run {
+          serialResponseBuffer = serialResponseBuffer.takeLast(1).toByteArray()
+          return@synchronized null
+        }
+        if (head > 0) {
+          serialResponseBuffer = serialResponseBuffer.copyOfRange(head, serialResponseBuffer.size)
+        }
+        if (serialResponseBuffer.size < MIN_D11_FRAME_SIZE) return@synchronized null
+        val dataLength = serialResponseBuffer[3].toInt() and 0xFF
+        val frameSize = MIN_D11_FRAME_SIZE + dataLength
+        if (serialResponseBuffer.size < frameSize) return@synchronized null
+        val frame = serialResponseBuffer.copyOfRange(0, frameSize)
+        serialResponseBuffer = serialResponseBuffer.copyOfRange(frameSize, serialResponseBuffer.size)
+        var checksum = (frame[2].toInt() and 0xFF) xor dataLength
+        for (index in 0 until dataLength) {
+          checksum = checksum xor (frame[4 + index].toInt() and 0xFF)
+        }
+        if (
+          frame[frameSize - 2] != FRAME_TAIL ||
+          frame[frameSize - 1] != FRAME_TAIL ||
+          (frame[4 + dataLength].toInt() and 0xFF) != checksum
+        ) {
+          continue
+        }
+        return@synchronized D11Response(
+          command = frame[2].toInt() and 0xFF,
+          data = frame.copyOfRange(4, 4 + dataLength),
+        )
+      }
+      null
+    }
 
   private suspend fun requestD11PrintStatus(): Int? {
     if (!synchronized(stateLock) { statusNotificationsEnabled }) return null
@@ -971,6 +1069,7 @@ class PriceTagPrinterModule : Module() {
       negotiatedMtu = DEFAULT_ATT_MTU
       statusNotificationsEnabled = false
       notificationBuffer = byteArrayOf()
+      serialResponseBuffer = byteArrayOf()
       lastD11StatusPage = null
     }
     try {
@@ -992,7 +1091,8 @@ class PriceTagPrinterModule : Module() {
 
   private data class D11PrintJob(
     val frames: List<ByteArray>,
-    val maxFrameBytes: Int
+    val maxFrameBytes: Int,
+    val preflightFrameCount: Int,
   )
 
   private data class D11Response(
@@ -1020,8 +1120,11 @@ class PriceTagPrinterModule : Module() {
     private const val PRINTER_READY_DELAY_MS = 250L
     private const val PACKET_DELAY_MS = 8L
     private const val STATUS_RESPONSE_TIMEOUT_MS = 900L
+    private const val SERIAL_RESPONSE_TIMEOUT_MS = 1_500L
+    private const val SERIAL_RESPONSE_POLL_MS = 10L
+    private const val SERIAL_READ_BUFFER_BYTES = 1024
     private const val PRINT_STATUS_POLL_DELAY_MS = 120L
-    private const val PRINT_STATUS_ATTEMPTS = 5
+    private const val PRINT_STATUS_ATTEMPTS = 50
     private const val PRINT_DISPATCH_SETTLE_MS = 350L
     private const val GATT_RECONNECT_DELAY_MS = 250L
     private const val DEFAULT_ATT_MTU = 23

@@ -36,6 +36,20 @@ class D11ProtocolTest {
   }
 
   @Test
+  fun `setup commands map to their D11 acknowledgement commands`() {
+    assertEquals(0x31, D11Protocol.expectedResponseCommand(0x21))
+    assertEquals(0x33, D11Protocol.expectedResponseCommand(0x23))
+    assertEquals(0x02, D11Protocol.expectedResponseCommand(0x01))
+    assertEquals(0x30, D11Protocol.expectedResponseCommand(0x20))
+    assertEquals(0x04, D11Protocol.expectedResponseCommand(0x03))
+    assertEquals(0x14, D11Protocol.expectedResponseCommand(0x13))
+    assertEquals(0x16, D11Protocol.expectedResponseCommand(0x15))
+    assertEquals(0xE4, D11Protocol.expectedResponseCommand(0xE3))
+    assertEquals(0xB3, D11Protocol.expectedResponseCommand(0xA3))
+    assertEquals(0xF4, D11Protocol.expectedResponseCommand(0xF3))
+  }
+
+  @Test
   fun `counter clockwise transport mapping preserves all label corners`() {
     assertEquals(Pair(0, 399), D11Protocol.counterClockwiseTransportCoordinates(0, 0, 400))
     assertEquals(Pair(95, 399), D11Protocol.counterClockwiseTransportCoordinates(0, 95, 400))

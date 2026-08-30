@@ -85,6 +85,12 @@ internal object D11Protocol {
     return frame[2].toInt() and 0xFF
   }
 
+  fun expectedResponseCommand(command: Int): Int =
+    when (command) {
+      0x21, 0x23, 0x20, 0xA3 -> command + 0x10
+      else -> command + 0x01
+    }
+
   fun deliveryMetadata(
     packetCount: Int,
     packetBytes: Int,
