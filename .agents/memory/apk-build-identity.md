@@ -7,4 +7,4 @@ CI-generated Android APKs should carry the GitHub Actions workflow run number in
 
 **Why:** A fixed version code and repeated artifact name make it difficult to know which APK is installed, and Android may treat a later debug build as the same version rather than an upgrade.
 
-**How to apply:** Keep the base app version stable for release semantics, but inject a monotonic CI build number during Expo prebuild and expose the resulting version in the Settings screen.
+**How to apply:** Keep the base app version stable for release semantics and inject a monotonic CI build number during Expo prebuild. In an installed APK, display `nativeApplicationVersion` and `nativeBuildVersion`; `expoConfig.version` can omit the packaged build identity.

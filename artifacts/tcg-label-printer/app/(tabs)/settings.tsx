@@ -313,7 +313,11 @@ export default function SettingsScreen() {
   ).length;
 
   const topPad = Platform.OS === 'web' ? 67 : insets.top;
-  const appVersion = Constants.expoConfig?.version ?? '1.0.0';
+  const nativeVersion =
+    Constants.nativeApplicationVersion ?? Constants.expoConfig?.version ?? '1.0.0';
+  const appVersion = Constants.nativeBuildVersion
+    ? `${nativeVersion} · build ${Constants.nativeBuildVersion}`
+    : nativeVersion;
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
