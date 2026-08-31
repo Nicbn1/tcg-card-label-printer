@@ -7,8 +7,8 @@ import org.junit.Test
 
 class D11ProtocolTest {
   @Test
-  fun `12 mm preflight uses exact big endian dimensions`() {
-    val frames = D11Protocol.preflightFrames(width = 96, height = 400)
+  fun `12 mm D11 preflight sends only the big endian row count`() {
+    val frames = D11Protocol.preflightFrames(height = 400)
 
     assertEquals(
       listOf(
@@ -17,7 +17,7 @@ class D11ProtocolTest {
         "55 55 01 01 01 01 AA AA",
         "55 55 20 01 01 20 AA AA",
         "55 55 03 01 01 03 AA AA",
-        "55 55 13 04 01 90 00 60 E6 AA AA",
+        "55 55 13 02 01 90 80 AA AA",
         "55 55 15 02 00 01 16 AA AA",
       ),
       frames.map(::hex),
@@ -26,7 +26,7 @@ class D11ProtocolTest {
 
   @Test
   fun `print starts before page setup commands`() {
-    val commands = D11Protocol.preflightFrames(96, 400).map(D11Protocol::command)
+    val commands = D11Protocol.preflightFrames(400).map(D11Protocol::command)
 
     assertEquals(listOf(0x21, 0x23, 0x01, 0x20, 0x03, 0x13, 0x15), commands)
     assertEquals(2, commands.indexOf(0x01))

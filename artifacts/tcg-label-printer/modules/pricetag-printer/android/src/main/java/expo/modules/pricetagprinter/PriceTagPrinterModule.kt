@@ -414,7 +414,7 @@ class PriceTagPrinterModule : Module() {
   private fun createD11PrintJob(lines: List<String>): D11PrintJob {
     val bitmap = renderLabel(lines)
     val frames = mutableListOf<ByteArray>()
-    frames += D11Protocol.preflightFrames(bitmap.width, bitmap.height)
+    frames += D11Protocol.preflightFrames(bitmap.height)
 
     for (row in 0 until bitmap.height) {
       val rowBytes = packD11BitmapRow(bitmap, row)
@@ -439,7 +439,7 @@ class PriceTagPrinterModule : Module() {
     return D11PrintJob(
       frames = frames,
       maxFrameBytes = frames.maxOf { it.size },
-      preflightFrameCount = D11Protocol.preflightFrames(bitmap.width, bitmap.height).size,
+      preflightFrameCount = D11Protocol.preflightFrames(bitmap.height).size,
     )
   }
 

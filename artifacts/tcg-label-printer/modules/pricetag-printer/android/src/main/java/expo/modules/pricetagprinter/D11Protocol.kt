@@ -27,14 +27,14 @@ internal object D11Protocol {
    * Commands sent before bitmap rows. The print task must start before page
    * clear/start/size setup, and all 16-bit values are big-endian.
    */
-  fun preflightFrames(width: Int, height: Int, quantity: Int = 1): List<ByteArray> =
+  fun preflightFrames(height: Int, quantity: Int = 1): List<ByteArray> =
     listOf(
       buildFrame(CMD_SET_DENSITY, byteArrayOf(D11_DENSITY.toByte())),
       buildFrame(CMD_SET_LABEL_TYPE, byteArrayOf(D11_LABEL_TYPE.toByte())),
       buildFrame(CMD_PRINT_START, byteArrayOf(0x01)),
       buildFrame(CMD_PRINT_CLEAR, byteArrayOf(0x01)),
       buildFrame(CMD_PAGE_START, byteArrayOf(0x01)),
-      buildFrame(CMD_SET_PAGE_SIZE, u16(height) + u16(width)),
+      buildFrame(CMD_SET_PAGE_SIZE, u16(height)),
       buildFrame(CMD_PRINT_QUANTITY, u16(quantity)),
     )
 
