@@ -369,27 +369,18 @@ class PriceTagPrinterModule : Module() {
       }
       throwIfD11PrintRejected()
 
-      var statusPacketsQueued = 0
-      var receivedStatus = false
-      var completedPageCount: Int? = null
-      for (attempt in 0 until PRINT_STATUS_ATTEMPTS) {
-        throwIfD11PrintRejected()
-        statusPacketsQueued += 1
-        val status = sendD11CommandAndAwait(
-          buildD11Frame(CMD_PRINT_STATUS, byteArrayOf(0x01)),
-          RESP_PRINT_STATUS,
-          requireSuccessByte = false,
+      val status = awaitSerialD11Response(
+        RESP_PRINTER_PAGE_INDEX,
+        timeoutMs = PRINT_COMPLETION_TIMEOUT_MS,
+      )
+      if (status.data.size != 2) {
+        throw IOException(
+          "D11_PRINT_STATUS_INVALID: The NIIMBOT D11 returned an invalid page-completion packet."
         )
-        if (status.data.size >= 2) {
-          val page = ((status.data[0].toInt() and 0xFF) shl 8) or
-            (status.data[1].toInt() and 0xFF)
-          receivedStatus = true
-          completedPageCount = page
-          if (page >= 1) break
-        }
-        delay(PRINT_STATUS_POLL_DELAY_MS)
       }
-      if ((completedPageCount ?: 0) < 1) {
+      val completedPageCount =
+        ((status.data[0].toInt() and 0xFF) shl 8) or (status.data[1].toInt() and 0xFF)
+      if (completedPageCount < 1) {
         throw IOException(
           "D11_PRINT_NOT_COMPLETED: The NIIMBOT D11 did not finish receiving the label bitmap."
         )
@@ -401,9 +392,9 @@ class PriceTagPrinterModule : Module() {
       delay(PRINT_DISPATCH_SETTLE_MS)
       throwIfD11PrintRejected()
       return D11Protocol.deliveryMetadata(
-        packetCount = job.frames.size + statusPacketsQueued + 1,
+        packetCount = job.frames.size + 1,
         packetBytes = job.maxFrameBytes,
-        statusReceived = receivedStatus,
+        statusReceived = true,
         completedPageCount = completedPageCount,
       )
     } finally {
@@ -417,23 +408,7 @@ class PriceTagPrinterModule : Module() {
     frames += D11Protocol.preflightFrames(bitmap.height)
 
     for (row in 0 until bitmap.height) {
-      val rowBytes = packD11BitmapRow(bitmap, row)
-      if (rowBytes.all { it.toInt() == 0 }) {
-        frames += buildD11Frame(CMD_PRINT_EMPTY_ROW, u16(row) + byteArrayOf(0x01))
-      } else {
-        val counts = ByteArray(3) { group ->
-          val start = group * 4
-          var count = 0
-          for (index in start until start + 4) {
-            count += Integer.bitCount(rowBytes[index].toInt() and 0xFF)
-          }
-          count.toByte()
-        }
-        frames += buildD11Frame(
-          CMD_PRINT_BITMAP_ROW,
-          u16(row) + counts + byteArrayOf(0x01) + rowBytes
-        )
-      }
+      frames += D11Protocol.imageRowFrame(row, packD11BitmapRow(bitmap, row))
     }
     frames += buildD11Frame(CMD_PAGE_END, byteArrayOf(0x01))
     return D11PrintJob(
@@ -657,8 +632,11 @@ class PriceTagPrinterModule : Module() {
     return response
   }
 
-  private suspend fun awaitSerialD11Response(expectedCommand: Int): D11Response {
-    val deadline = System.nanoTime() + (SERIAL_RESPONSE_TIMEOUT_MS * 1_000_000L)
+  private suspend fun awaitSerialD11Response(
+    expectedCommand: Int,
+    timeoutMs: Long = SERIAL_RESPONSE_TIMEOUT_MS,
+  ): D11Response {
+    val deadline = System.nanoTime() + (timeoutMs * 1_000_000L)
     while (System.nanoTime() < deadline) {
       while (true) {
         val response = pollSerialD11Response() ?: break
@@ -1107,12 +1085,11 @@ class PriceTagPrinterModule : Module() {
     private const val FRAME_HEAD: Byte = 0x55
     private const val FRAME_TAIL: Byte = 0xAA.toByte()
     private const val CMD_CONNECT = 0xC1
-    private const val CMD_PRINT_BITMAP_ROW = 0x85
-    private const val CMD_PRINT_EMPTY_ROW = 0x84
     private const val CMD_PRINT_STATUS = 0xA3
     private const val CMD_PAGE_END = 0xE3
     private const val CMD_PRINT_END = 0xF3
     private const val RESP_PRINT_STATUS = 0xB3
+    private const val RESP_PRINTER_PAGE_INDEX = 0xE0
     private const val RESP_PRINT_ERROR = 0xDB
 
     private const val SCAN_DURATION_MS = 6_000L
@@ -1121,10 +1098,9 @@ class PriceTagPrinterModule : Module() {
     private const val PACKET_DELAY_MS = 8L
     private const val STATUS_RESPONSE_TIMEOUT_MS = 900L
     private const val SERIAL_RESPONSE_TIMEOUT_MS = 1_500L
+    private const val PRINT_COMPLETION_TIMEOUT_MS = 15_000L
     private const val SERIAL_RESPONSE_POLL_MS = 10L
     private const val SERIAL_READ_BUFFER_BYTES = 1024
-    private const val PRINT_STATUS_POLL_DELAY_MS = 120L
-    private const val PRINT_STATUS_ATTEMPTS = 50
     private const val PRINT_DISPATCH_SETTLE_MS = 350L
     private const val GATT_RECONNECT_DELAY_MS = 250L
     private const val DEFAULT_ATT_MTU = 23

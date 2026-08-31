@@ -7,7 +7,7 @@ NIIMBOT D11 jobs must acknowledge setup commands before raster rows, acknowledge
 
 **Why:** Blindly streaming setup and ending without reading serial responses made a connected D11 feed blank labels. A physical D11 also accepted the newer D110 rows-plus-columns command and reported completion while feeding four fully blank labels.
 
-**How to apply:** For the D11 profile, send page size as height/rows only. Await each mapped setup response, stream raster rows, await page-end response, poll status until one page completes, then acknowledge `PrintEnd`. Do not treat command acknowledgement as proof that a newer model's payload shape is compatible.
+**How to apply:** For the old-D11 profile, send page size as height/rows only. Encode rows with six or fewer black pixels using indexed command `0x83`; use `0x85` for denser rows. After page end, wait for unsolicited two-byte page index `0xE0` instead of polling newer-model status `0xA3`, then acknowledge `PrintEnd`.
 
 Map counter-clockwise label rotation pixel-by-pixel into an opaque 96 × 400 transport bitmap; do not depend on Android's filtered negative-angle bitmap transform.
 

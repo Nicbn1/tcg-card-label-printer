@@ -20,6 +20,9 @@ internal object D11Protocol {
   private const val CMD_SET_DENSITY = 0x21
   private const val CMD_SET_LABEL_TYPE = 0x23
   private const val CMD_PRINT_START = 0x01
+  private const val CMD_PRINT_BITMAP_ROW_INDEXED = 0x83
+  private const val CMD_PRINT_EMPTY_ROW = 0x84
+  private const val CMD_PRINT_BITMAP_ROW = 0x85
   private const val D11_LABEL_TYPE = 1
   private const val D11_DENSITY = 2
 
@@ -40,6 +43,48 @@ internal object D11Protocol {
 
   fun u16(value: Int): ByteArray =
     byteArrayOf(((value shr 8) and 0xFF).toByte(), (value and 0xFF).toByte())
+
+  fun imageRowFrame(row: Int, rowBytes: ByteArray, printheadPixels: Int = 96): ByteArray {
+    require(printheadPixels > 0 && printheadPixels % 24 == 0) {
+      "D11 print-head width must divide evenly into three byte-aligned segments."
+    }
+    require(rowBytes.size == printheadPixels / 8) {
+      "D11 bitmap row does not match the configured print-head width."
+    }
+
+    val segmentBytes = rowBytes.size / 3
+    val counts = ByteArray(3)
+    var blackPixels = 0
+    rowBytes.forEachIndexed { index, byte ->
+      val count = Integer.bitCount(byte.toInt() and 0xFF)
+      blackPixels += count
+      counts[index / segmentBytes] = (counts[index / segmentBytes].toInt() + count).toByte()
+    }
+
+    if (blackPixels == 0) {
+      return buildFrame(CMD_PRINT_EMPTY_ROW, u16(row) + byteArrayOf(0x01))
+    }
+
+    if (blackPixels <= 6) {
+      val indexes = mutableListOf<Byte>()
+      rowBytes.forEachIndexed { byteIndex, byte ->
+        for (bit in 0 until 8) {
+          if ((byte.toInt() and (0x80 shr bit)) != 0) {
+            indexes += u16((byteIndex * 8) + bit).toList()
+          }
+        }
+      }
+      return buildFrame(
+        CMD_PRINT_BITMAP_ROW_INDEXED,
+        u16(row) + counts + byteArrayOf(0x01) + indexes.toByteArray(),
+      )
+    }
+
+    return buildFrame(
+      CMD_PRINT_BITMAP_ROW,
+      u16(row) + counts + byteArrayOf(0x01) + rowBytes,
+    )
+  }
 
   /**
    * Maps a landscape label pixel into the D11's print-head coordinate system
