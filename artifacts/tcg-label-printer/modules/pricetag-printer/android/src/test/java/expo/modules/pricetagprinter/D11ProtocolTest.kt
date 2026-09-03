@@ -36,32 +36,32 @@ class D11ProtocolTest {
   }
 
   @Test
-  fun `empty image row uses the D11 empty-row packet`() {
+  fun `empty image row uses a fixed width bitmap packet`() {
     assertEquals(
-      "55 55 84 03 00 04 01 82 AA AA",
+      "55 55 85 12 00 04 00 00 00 01 00 00 00 00 00 00 00 00 00 00 00 00 92 AA AA",
       hex(D11Protocol.imageRowFrame(4, ByteArray(12))),
     )
   }
 
   @Test
-  fun `sparse image row uses indexed pixels for old D11 firmware`() {
+  fun `sparse image row keeps zero metadata and full bitmap data`() {
     val row = ByteArray(12)
     row[0] = 0x80.toByte()
     row[11] = 0x01
 
     assertEquals(
-      "55 55 83 0A 00 07 01 00 01 01 00 00 00 5F D0 AA AA",
+      "55 55 85 12 00 07 00 00 00 01 80 00 00 00 00 00 00 00 00 00 00 01 10 AA AA",
       hex(D11Protocol.imageRowFrame(7, row)),
     )
   }
 
   @Test
-  fun `dense image row uses full bitmap data and split pixel counts`() {
+  fun `dense image row keeps zero metadata and full bitmap data`() {
     val row = ByteArray(12)
     row[0] = 0xFF.toByte()
 
     assertEquals(
-      "55 55 85 12 00 09 08 00 00 01 FF 00 00 00 00 00 00 00 00 00 00 00 68 AA AA",
+      "55 55 85 12 00 09 00 00 00 01 FF 00 00 00 00 00 00 00 00 00 00 00 60 AA AA",
       hex(D11Protocol.imageRowFrame(9, row)),
     )
   }
