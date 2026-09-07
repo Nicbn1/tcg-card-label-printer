@@ -14,29 +14,25 @@ internal object D11Protocol {
   private const val FRAME_HEAD: Byte = 0x55
   private const val FRAME_TAIL: Byte = 0xAA.toByte()
   private const val CMD_PAGE_START = 0x03
-  private const val CMD_PRINT_QUANTITY = 0x15
   private const val CMD_SET_PAGE_SIZE = 0x13
-  private const val CMD_PRINT_CLEAR = 0x20
   private const val CMD_SET_DENSITY = 0x21
   private const val CMD_SET_LABEL_TYPE = 0x23
   private const val CMD_PRINT_START = 0x01
   private const val CMD_PRINT_BITMAP_ROW = 0x85
   private const val D11_LABEL_TYPE = 1
-  private const val D11_DENSITY = 2
+  private const val D11_DENSITY = 3
 
   /**
    * Commands sent before bitmap rows. The print task must start before page
    * clear/start/size setup, and all 16-bit values are big-endian.
    */
-  fun preflightFrames(height: Int, quantity: Int = 1): List<ByteArray> =
+  fun preflightFrames(height: Int, width: Int): List<ByteArray> =
     listOf(
       buildFrame(CMD_SET_DENSITY, byteArrayOf(D11_DENSITY.toByte())),
       buildFrame(CMD_SET_LABEL_TYPE, byteArrayOf(D11_LABEL_TYPE.toByte())),
       buildFrame(CMD_PRINT_START, byteArrayOf(0x01)),
-      buildFrame(CMD_PRINT_CLEAR, byteArrayOf(0x01)),
       buildFrame(CMD_PAGE_START, byteArrayOf(0x01)),
-      buildFrame(CMD_SET_PAGE_SIZE, u16(height)),
-      buildFrame(CMD_PRINT_QUANTITY, u16(quantity)),
+      buildFrame(CMD_SET_PAGE_SIZE, u16(height) + u16(width)),
     )
 
   fun u16(value: Int): ByteArray =

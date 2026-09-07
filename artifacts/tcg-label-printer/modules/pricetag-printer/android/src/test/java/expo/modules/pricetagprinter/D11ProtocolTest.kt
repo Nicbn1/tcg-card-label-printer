@@ -7,18 +7,16 @@ import org.junit.Test
 
 class D11ProtocolTest {
   @Test
-  fun `12 mm D11 preflight sends only the big endian row count`() {
-    val frames = D11Protocol.preflightFrames(height = 400)
+  fun `D11 preflight matches the RFCOMM reference implementation`() {
+    val frames = D11Protocol.preflightFrames(height = 400, width = 96)
 
     assertEquals(
       listOf(
-        "55 55 21 01 02 22 AA AA",
+        "55 55 21 01 03 23 AA AA",
         "55 55 23 01 01 23 AA AA",
         "55 55 01 01 01 01 AA AA",
-        "55 55 20 01 01 20 AA AA",
         "55 55 03 01 01 03 AA AA",
-        "55 55 13 02 01 90 80 AA AA",
-        "55 55 15 02 00 01 16 AA AA",
+        "55 55 13 04 01 90 00 60 E6 AA AA",
       ),
       frames.map(::hex),
     )
@@ -26,11 +24,10 @@ class D11ProtocolTest {
 
   @Test
   fun `print starts before page setup commands`() {
-    val commands = D11Protocol.preflightFrames(400).map(D11Protocol::command)
+    val commands = D11Protocol.preflightFrames(400, 96).map(D11Protocol::command)
 
-    assertEquals(listOf(0x21, 0x23, 0x01, 0x20, 0x03, 0x13, 0x15), commands)
+    assertEquals(listOf(0x21, 0x23, 0x01, 0x03, 0x13), commands)
     assertEquals(2, commands.indexOf(0x01))
-    assertEquals(true, commands.indexOf(0x01) < commands.indexOf(0x20))
     assertEquals(true, commands.indexOf(0x01) < commands.indexOf(0x03))
     assertEquals(true, commands.indexOf(0x01) < commands.indexOf(0x13))
   }

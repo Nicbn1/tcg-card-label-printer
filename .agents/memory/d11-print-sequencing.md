@@ -3,11 +3,11 @@ name: D11 print sequencing
 description: NIIMBOT D11 protocol order and error handling required for reliable queued label printing.
 ---
 
-NIIMBOT D11 jobs must acknowledge setup commands before raster rows, acknowledge page end, and report page completion before `PrintEnd`. D11 16-bit fields are big-endian; older D11 models require `SetPageSize` to contain only the row count.
+NIIMBOT D11 jobs must use one coherent model-specific print task; do not combine setup, page-size, raster, or completion behavior from different D11/D110 profiles. D11 16-bit fields are big-endian.
 
-**Why:** Blindly streaming setup and ending without reading serial responses made a connected D11 feed blank labels. A physical D11 also accepted the newer D110 rows-plus-columns command and reported completion while feeding four fully blank labels.
+**Why:** A physical D11 accepted multiple mixed-profile jobs, fed the correct number of labels, and reported completion while printing no dots. Command acceptance proved framing and feed length, not raster compatibility.
 
-**How to apply:** For the old-D11 profile, send page size as height/rows only. Encode rows with six or fewer black pixels using indexed command `0x83`; use `0x85` for denser rows. After page end, wait for unsolicited two-byte page index `0xE0` instead of polling newer-model status `0xA3`, then acknowledge `PrintEnd`.
+**How to apply:** Start from a hardware-tested repository's complete task. The RFCOMM D11 path adapted from niimbot/niimprintx uses density 3, label type 1, one-byte PrintStart, PageStart, four-byte rows/columns, full `0x85` rows with zero count metadata, PageEnd, then retries PrintEnd until accepted.
 
 Map counter-clockwise label rotation pixel-by-pixel into an opaque 96 × 400 transport bitmap; do not depend on Android's filtered negative-angle bitmap transform.
 

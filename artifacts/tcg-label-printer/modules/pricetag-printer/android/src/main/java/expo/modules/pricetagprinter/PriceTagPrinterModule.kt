@@ -369,33 +369,15 @@ class PriceTagPrinterModule : Module() {
       }
       throwIfD11PrintRejected()
 
-      val status = awaitSerialD11Response(
-        RESP_PRINTER_PAGE_INDEX,
-        timeoutMs = PRINT_COMPLETION_TIMEOUT_MS,
-      )
-      if (status.data.size != 2) {
-        throw IOException(
-          "D11_PRINT_STATUS_INVALID: The NIIMBOT D11 returned an invalid page-completion packet."
-        )
-      }
-      val completedPageCount =
-        ((status.data[0].toInt() and 0xFF) shl 8) or (status.data[1].toInt() and 0xFF)
-      if (completedPageCount < 1) {
-        throw IOException(
-          "D11_PRINT_NOT_COMPLETED: The NIIMBOT D11 did not finish receiving the label bitmap."
-        )
-      }
-      sendD11CommandAndAwait(
-        buildD11Frame(CMD_PRINT_END, byteArrayOf(0x01)),
-        D11Protocol.expectedResponseCommand(CMD_PRINT_END),
-      )
+      delay(PRINT_END_INITIAL_DELAY_MS)
+      finishD11Print()
       delay(PRINT_DISPATCH_SETTLE_MS)
       throwIfD11PrintRejected()
       return D11Protocol.deliveryMetadata(
         packetCount = job.frames.size + 1,
         packetBytes = job.maxFrameBytes,
         statusReceived = true,
-        completedPageCount = completedPageCount,
+        completedPageCount = 1,
       )
     } finally {
       printMutex.unlock()
@@ -405,7 +387,7 @@ class PriceTagPrinterModule : Module() {
   private fun createD11PrintJob(lines: List<String>): D11PrintJob {
     val bitmap = renderLabel(lines)
     val frames = mutableListOf<ByteArray>()
-    frames += D11Protocol.preflightFrames(bitmap.height)
+    frames += D11Protocol.preflightFrames(bitmap.height, bitmap.width)
 
     for (row in 0 until bitmap.height) {
       frames += D11Protocol.imageRowFrame(row, packD11BitmapRow(bitmap, row))
@@ -414,7 +396,23 @@ class PriceTagPrinterModule : Module() {
     return D11PrintJob(
       frames = frames,
       maxFrameBytes = frames.maxOf { it.size },
-      preflightFrameCount = D11Protocol.preflightFrames(bitmap.height).size,
+      preflightFrameCount = D11Protocol.preflightFrames(bitmap.height, bitmap.width).size,
+    )
+  }
+
+  private suspend fun finishD11Print() {
+    val deadline = System.nanoTime() + (PRINT_COMPLETION_TIMEOUT_MS * 1_000_000L)
+    while (System.nanoTime() < deadline) {
+      val response = sendD11CommandAndAwait(
+        buildD11Frame(CMD_PRINT_END, byteArrayOf(0x01)),
+        D11Protocol.expectedResponseCommand(CMD_PRINT_END),
+        requireSuccessByte = false,
+      )
+      if (response.data.firstOrNull()?.toInt()?.and(0xFF) != 0) return
+      delay(PRINT_END_RETRY_DELAY_MS)
+    }
+    throw IOException(
+      "D11_PRINT_NOT_COMPLETED: The NIIMBOT D11 did not accept the completed label bitmap."
     )
   }
 
@@ -1089,7 +1087,6 @@ class PriceTagPrinterModule : Module() {
     private const val CMD_PAGE_END = 0xE3
     private const val CMD_PRINT_END = 0xF3
     private const val RESP_PRINT_STATUS = 0xB3
-    private const val RESP_PRINTER_PAGE_INDEX = 0xE0
     private const val RESP_PRINT_ERROR = 0xDB
 
     private const val SCAN_DURATION_MS = 6_000L
@@ -1099,6 +1096,8 @@ class PriceTagPrinterModule : Module() {
     private const val STATUS_RESPONSE_TIMEOUT_MS = 900L
     private const val SERIAL_RESPONSE_TIMEOUT_MS = 1_500L
     private const val PRINT_COMPLETION_TIMEOUT_MS = 15_000L
+    private const val PRINT_END_INITIAL_DELAY_MS = 300L
+    private const val PRINT_END_RETRY_DELAY_MS = 100L
     private const val SERIAL_RESPONSE_POLL_MS = 10L
     private const val SERIAL_READ_BUFFER_BYTES = 1024
     private const val PRINT_DISPATCH_SETTLE_MS = 350L
