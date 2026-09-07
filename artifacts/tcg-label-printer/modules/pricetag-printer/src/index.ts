@@ -18,6 +18,12 @@ export type NativePrinterConnection = {
 
 export type NativePrinterLabel = {
   lines: string[];
+  cardName?: string;
+  series?: string;
+  price?: string;
+  condition?: string;
+  generatedAt?: string;
+  stale?: boolean;
   barcode?: string;
   showBarcode?: boolean;
   showLogo?: boolean;

@@ -2,36 +2,40 @@
   <rect width="1200" height="360" fill="#232323"/>
   <rect x="30" y="36" width="1140" height="288" rx="24" fill="#fff"/>
 
-  <!-- Monochrome Figureheadz burst -->
-  <path d="M42 177 L81 147 L54 102 L117 111 L132 51 L174 105 L228 66
-           L222 138 L276 162 L228 195 L258 252 L195 240 L171 309
-           L135 246 L72 288 L84 219 Z" fill="#000"/>
-  <text x="72" y="192" fill="#fff" font-family="Arial Narrow,Arial,sans-serif"
-        font-size="30" font-style="italic" font-weight="900">FIGUREHEADZ</text>
+  <!-- Reference-matched information hierarchy -->
+  <text x="45" y="99" fill="#000" font-family="Arial,sans-serif" font-size="63" font-weight="900">GARGANACL #147</text>
+  <text x="45" y="147" fill="#000" font-family="Arial,sans-serif" font-size="39" font-weight="800">Pokemon Mega Evolution</text>
+  <text x="45" y="186" fill="#000" font-family="Arial,sans-serif" font-size="30" font-weight="700">LOOSE</text>
+  <text x="45" y="264" fill="#000" font-family="Arial,sans-serif" font-size="75" font-weight="900">$1.99</text>
 
-  <!-- Enlarged bold print text -->
-  <text x="294" y="123" fill="#000" font-family="monospace" font-size="84" font-weight="900">CHARIZARD</text>
-  <text x="294" y="210" fill="#000" font-family="monospace" font-size="72" font-weight="900">BASE SET  $325</text>
-  <text x="294" y="294" fill="#000" font-family="monospace" font-size="66" font-weight="900">NEAR MINT</text>
+  <!-- Monochrome Figureheadz burst in a right-side brand column -->
+  <path d="M927 141 L960 117 L945 81 L999 93 L1023 51 L1053 93 L1107 66
+           L1098 114 L1158 129 L1110 156 L1140 195 L1080 186 L1050 231
+           L1020 189 L963 216 L972 168 Z" fill="#000"/>
+  <text x="954" y="153" fill="#fff" font-family="Arial Narrow,Arial,sans-serif"
+        font-size="21" font-style="italic" font-weight="900">FIGUREHEADZ</text>
 
   <!-- Code 128-style barcode zone -->
   <g fill="#000">
-    <rect x="756" y="234" width="6" height="72"/><rect x="768" y="234" width="3" height="72"/>
-    <rect x="780" y="234" width="9" height="72"/><rect x="798" y="234" width="3" height="72"/>
-    <rect x="807" y="234" width="6" height="72"/><rect x="822" y="234" width="6" height="72"/>
-    <rect x="834" y="234" width="3" height="72"/><rect x="843" y="234" width="9" height="72"/>
-    <rect x="858" y="234" width="6" height="72"/><rect x="873" y="234" width="3" height="72"/>
-    <rect x="882" y="234" width="3" height="72"/><rect x="891" y="234" width="9" height="72"/>
-    <rect x="906" y="234" width="3" height="72"/><rect x="918" y="234" width="6" height="72"/>
-    <rect x="930" y="234" width="9" height="72"/><rect x="945" y="234" width="3" height="72"/>
-    <rect x="957" y="234" width="6" height="72"/><rect x="972" y="234" width="3" height="72"/>
-    <rect x="981" y="234" width="9" height="72"/><rect x="996" y="234" width="6" height="72"/>
-    <rect x="1008" y="234" width="3" height="72"/><rect x="1020" y="234" width="9" height="72"/>
-    <rect x="1035" y="234" width="3" height="72"/><rect x="1044" y="234" width="6" height="72"/>
-    <rect x="1059" y="234" width="9" height="72"/><rect x="1074" y="234" width="3" height="72"/>
-    <rect x="1086" y="234" width="6" height="72"/><rect x="1098" y="234" width="3" height="72"/>
-    <rect x="1110" y="234" width="9" height="72"/><rect x="1125" y="234" width="6" height="72"/>
+    <rect x="45" y="276" width="6" height="30"/><rect x="57" y="276" width="3" height="30"/>
+    <rect x="69" y="276" width="9" height="30"/><rect x="87" y="276" width="3" height="30"/>
+    <rect x="96" y="276" width="6" height="30"/><rect x="111" y="276" width="6" height="30"/>
+    <rect x="123" y="276" width="3" height="30"/><rect x="132" y="276" width="9" height="30"/>
+    <rect x="147" y="276" width="6" height="30"/><rect x="162" y="276" width="3" height="30"/>
+    <rect x="171" y="276" width="3" height="30"/><rect x="180" y="276" width="9" height="30"/>
+    <rect x="195" y="276" width="3" height="30"/><rect x="207" y="276" width="6" height="30"/>
+    <rect x="219" y="276" width="9" height="30"/><rect x="234" y="276" width="3" height="30"/>
+    <rect x="246" y="276" width="6" height="30"/><rect x="261" y="276" width="3" height="30"/>
+    <rect x="270" y="276" width="9" height="30"/><rect x="285" y="276" width="6" height="30"/>
+    <rect x="297" y="276" width="3" height="30"/><rect x="309" y="276" width="9" height="30"/>
+    <rect x="324" y="276" width="3" height="30"/><rect x="333" y="276" width="6" height="30"/>
+    <rect x="348" y="276" width="9" height="30"/><rect x="363" y="276" width="3" height="30"/>
+    <rect x="375" y="276" width="6" height="30"/><rect x="387" y="276" width="3" height="30"/>
+    <rect x="399" y="276" width="9" height="30"/><rect x="414" y="276" width="6" height="30"/>
   </g>
+  <text x="792" y="267" fill="#000" font-family="Arial,sans-serif" font-size="24">figureheadz.com</text>
+  <text x="792" y="294" fill="#000" font-family="Arial,sans-serif" font-size="21">Generated: 9/7/2026</text>
+  <text x="45" y="321" fill="#000" font-family="monospace" font-size="18" letter-spacing="8">10616247</text>
 
   <text x="30" y="350" fill="#bbb" font-family="Arial,sans-serif" font-size="16">
     Enlarged 3× preview · physical label: approximately 50 mm × 12 mm · 400 × 96 thermal dots

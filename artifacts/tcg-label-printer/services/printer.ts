@@ -240,6 +240,12 @@ export async function sendToPrinter(
     lines: getPrintableLines(label).filter(
       (line) => !line.startsWith('ID: ') && line !== 'figureheadz.com',
     ),
+    cardName: label.cardName,
+    series: label.series,
+    price: label.value,
+    condition: label.condition ?? 'Price',
+    generatedAt: formatGeneratedDate(label.generatedAt),
+    stale: label.stale ?? false,
     barcode: label.cardId ?? label.cardName,
     showBarcode: fields.includes('barcode'),
     showLogo: fields.includes('website'),
