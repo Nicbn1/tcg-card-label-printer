@@ -9,6 +9,8 @@ NIIMBOT D11 jobs must use one coherent model-specific print task; do not combine
 
 **How to apply:** Start from a hardware-tested repository's complete task. The RFCOMM D11 path adapted from niimbot/niimprintx uses density 3, label type 1, one-byte PrintStart, PageStart, four-byte rows/columns, full `0x85` rows with zero count metadata, PageEnd, then retries PrintEnd until accepted.
 
+This exact flow was physically confirmed to print thermal pixels on the target D11; preserve it while changing label artwork.
+
 Map counter-clockwise label rotation pixel-by-pixel into an opaque 96 × 400 transport bitmap; do not depend on Android's filtered negative-angle bitmap transform.
 
 **Why:** A physical D11 fed completely blank labels after the raster switched to a filtered `-90°` bitmap transform, even though the equivalent clockwise transform had printed visible content.

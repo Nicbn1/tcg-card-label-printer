@@ -15,6 +15,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -341,6 +342,9 @@ class PriceTagPrinterModule : Module() {
         ?.mapNotNull { it as? String }
         ?.filter { it.isNotBlank() }
         ?: emptyList()
+      val barcode = payload["barcode"] as? String
+      val showBarcode = payload["showBarcode"] as? Boolean ?: false
+      val showLogo = payload["showLogo"] as? Boolean ?: false
       if (lines.isEmpty()) {
         throw IllegalArgumentException("D11_LABEL_EMPTY: This label has no printable fields.")
       }
@@ -351,7 +355,7 @@ class PriceTagPrinterModule : Module() {
         )
       }
 
-      val job = createD11PrintJob(lines)
+      val job = createD11PrintJob(lines, barcode, showBarcode, showLogo)
       synchronized(stateLock) {
         printRejection.reset()
         lastD11StatusPage = null
@@ -384,8 +388,13 @@ class PriceTagPrinterModule : Module() {
     }
   }
 
-  private fun createD11PrintJob(lines: List<String>): D11PrintJob {
-    val bitmap = renderLabel(lines)
+  private fun createD11PrintJob(
+    lines: List<String>,
+    barcode: String?,
+    showBarcode: Boolean,
+    showLogo: Boolean,
+  ): D11PrintJob {
+    val bitmap = renderLabel(lines, barcode, showBarcode, showLogo)
     val frames = mutableListOf<ByteArray>()
     frames += D11Protocol.preflightFrames(bitmap.height, bitmap.width)
 
@@ -416,7 +425,12 @@ class PriceTagPrinterModule : Module() {
     )
   }
 
-  private fun renderLabel(lines: List<String>): Bitmap {
+  private fun renderLabel(
+    lines: List<String>,
+    barcode: String?,
+    showBarcode: Boolean,
+    showLogo: Boolean,
+  ): Bitmap {
     /*
      * The D11 consumes one bitmap row across the 96-dot print head and advances
      * the tape for each row. Render the label in its natural landscape
@@ -435,59 +449,45 @@ class PriceTagPrinterModule : Module() {
     val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
       color = Color.BLACK
     }
-    val maxWidth = LABEL_LENGTH_DOTS - (LABEL_PADDING_X * 2)
-    val firstLineTypeface = android.graphics.Typeface.create(
+    val logoWidth = if (showLogo) LOGO_WIDTH_DOTS else 0
+    val barcodeWidths = if (showBarcode && !barcode.isNullOrBlank()) {
+      code128Widths(barcode.take(MAX_BARCODE_CHARS))
+    } else {
+      emptyList()
+    }
+    val barcodeWidth = barcodeWidths.sum()
+    val barcodeStart = if (barcodeWidth > 0) {
+      LABEL_LENGTH_DOTS - LABEL_PADDING_X - barcodeWidth
+    } else {
+      LABEL_LENGTH_DOTS
+    }
+    val textStart = LABEL_PADDING_X + logoWidth
+    val maxWidth = barcodeStart - textStart - LABEL_SECTION_GAP
+    val boldTypeface = android.graphics.Typeface.create(
       android.graphics.Typeface.MONOSPACE,
       android.graphics.Typeface.BOLD
     )
-    val standardTypeface = android.graphics.Typeface.create(
-      android.graphics.Typeface.MONOSPACE,
-      android.graphics.Typeface.NORMAL
-    )
-    val requestedFirstLineTextSize = if (lines.size <= 7) 18f else 16f
-    val requestedStandardTextSize = if (lines.size <= 7) 14f else 12f
-    val lineGap = 0.5f
+    if (showLogo) drawFigureheadzLogo(canvas, paint)
 
-    paint.textSize = requestedFirstLineTextSize
-    paint.typeface = firstLineTypeface
-    val requestedFirstMetrics = paint.fontMetrics
-    paint.textSize = requestedStandardTextSize
-    paint.typeface = standardTypeface
-    val requestedStandardMetrics = paint.fontMetrics
-    val requestedGlyphHeight =
-      (-requestedFirstMetrics.ascent + requestedFirstMetrics.descent) +
-        ((lines.size - 1).coerceAtLeast(0) *
-          (-requestedStandardMetrics.ascent + requestedStandardMetrics.descent))
-    val availableGlyphHeight =
-      LABEL_WIDTH_DOTS - (LABEL_PADDING_Y * 2) - ((lines.size - 1).coerceAtLeast(0) * lineGap)
-    val typeScale = if (requestedGlyphHeight > 0f) {
-      minOf(1f, availableGlyphHeight / requestedGlyphHeight)
-    } else {
-      1f
-    }
-    val firstLineTextSize = requestedFirstLineTextSize * typeScale
-    val standardTextSize = requestedStandardTextSize * typeScale
-
-    paint.textSize = firstLineTextSize
-    paint.typeface = firstLineTypeface
-    val firstMetrics = paint.fontMetrics
-    paint.textSize = standardTextSize
-    paint.typeface = standardTypeface
-    val standardMetrics = paint.fontMetrics
-    var baseline = LABEL_PADDING_Y.toFloat() - firstMetrics.ascent
-    lines.forEachIndexed { index, line ->
+    val visibleLines = lines.take(MAX_TEXT_LINES)
+    val firstLineTextSize = 23f
+    val standardTextSize = 18f
+    var baseline = 23f
+    visibleLines.forEachIndexed { index, line ->
       paint.textSize = if (index == 0) firstLineTextSize else standardTextSize
-      paint.typeface = if (index == 0) firstLineTypeface else standardTypeface
+      paint.typeface = boldTypeface
+      paint.isFakeBoldText = true
       canvas.drawText(
         ellipsizeLine(line, paint, maxWidth),
-        LABEL_PADDING_X.toFloat(),
-        baseline.toFloat(),
+        textStart.toFloat(),
+        baseline,
         paint
       )
-      if (index < lines.lastIndex) {
-        val metrics = if (index == 0) firstMetrics else standardMetrics
-        baseline += metrics.descent + lineGap - standardMetrics.ascent
-      }
+      baseline += if (index == 0) 25f else 21f
+    }
+    paint.isFakeBoldText = false
+    if (barcodeWidths.isNotEmpty()) {
+      drawBarcode(canvas, paint, barcodeWidths, barcodeStart)
     }
     val transportBitmap = Bitmap.createBitmap(
       LABEL_WIDTH_DOTS,
@@ -509,6 +509,74 @@ class PriceTagPrinterModule : Module() {
       }
     }
     return transportBitmap
+  }
+
+  private fun drawFigureheadzLogo(canvas: Canvas, paint: Paint) {
+    val burst = Path().apply {
+      moveTo(4f, 47f)
+      lineTo(17f, 37f)
+      lineTo(8f, 22f)
+      lineTo(29f, 25f)
+      lineTo(34f, 5f)
+      lineTo(48f, 23f)
+      lineTo(66f, 10f)
+      lineTo(64f, 34f)
+      lineTo(82f, 42f)
+      lineTo(66f, 53f)
+      lineTo(76f, 72f)
+      lineTo(55f, 68f)
+      lineTo(47f, 91f)
+      lineTo(35f, 70f)
+      lineTo(14f, 84f)
+      lineTo(18f, 61f)
+      close()
+    }
+    paint.style = Paint.Style.FILL
+    paint.color = Color.BLACK
+    canvas.drawPath(burst, paint)
+    paint.color = Color.WHITE
+    paint.typeface = android.graphics.Typeface.create(
+      "sans-serif-condensed",
+      android.graphics.Typeface.BOLD_ITALIC,
+    )
+    paint.textSize = 10f
+    paint.isFakeBoldText = true
+    canvas.drawText("FIGUREHEADZ", 12f, 53f, paint)
+    paint.isFakeBoldText = false
+    paint.color = Color.BLACK
+  }
+
+  private fun drawBarcode(canvas: Canvas, paint: Paint, widths: List<Int>, startX: Int) {
+    var x = startX
+    var isBar = true
+    paint.style = Paint.Style.FILL
+    paint.color = Color.BLACK
+    widths.forEach { width ->
+      if (isBar) {
+        canvas.drawRect(
+          x.toFloat(),
+          BARCODE_TOP.toFloat(),
+          (x + width).toFloat(),
+          (LABEL_WIDTH_DOTS - LABEL_PADDING_Y).toFloat(),
+          paint,
+        )
+      }
+      x += width
+      isBar = !isBar
+    }
+  }
+
+  private fun code128Widths(value: String): List<Int> {
+    val symbols = CODE128_SYMBOLS
+    val codes = value.mapNotNull { character ->
+      character.code.takeIf { it in 32..126 }?.minus(32)
+    }
+    var checksum = 104
+    codes.forEachIndexed { index, code -> checksum += code * (index + 1) }
+    val symbolIndexes = listOf(104) + codes + listOf(checksum % 103, 106)
+    return symbolIndexes.flatMap { index ->
+      symbols[index].map { digit -> digit.digitToInt() }
+    }
   }
 
   private fun ellipsizeLine(line: String, paint: Paint, maxWidth: Int): String {
@@ -1113,5 +1181,26 @@ class PriceTagPrinterModule : Module() {
     private const val LABEL_LENGTH_DOTS = 400
     private const val LABEL_PADDING_X = 4
     private const val LABEL_PADDING_Y = 6
+    private const val LOGO_WIDTH_DOTS = 82
+    private const val LABEL_SECTION_GAP = 6
+    private const val MAX_TEXT_LINES = 3
+    private const val MAX_BARCODE_CHARS = 10
+    private const val BARCODE_TOP = 66
+    private val CODE128_SYMBOLS = listOf(
+      "212222", "222122", "222221", "121223", "121322", "131222", "122213", "122312",
+      "132212", "221213", "221312", "231212", "112232", "122132", "122231", "113222",
+      "123122", "123221", "223211", "221132", "221231", "213212", "223112", "312131",
+      "311222", "321122", "321221", "312212", "322112", "322211", "212123", "212321",
+      "232121", "111323", "131123", "131321", "112313", "132113", "132311", "211313",
+      "231113", "231311", "112133", "112331", "132131", "113123", "113321", "133121",
+      "313121", "211331", "231131", "213113", "213311", "213131", "311123", "311321",
+      "331121", "312113", "312311", "332111", "314111", "221411", "431111", "111224",
+      "111422", "121124", "121421", "141122", "141221", "112214", "112412", "122114",
+      "122411", "142112", "142211", "241211", "221114", "413111", "241112", "134111",
+      "111242", "121142", "121241", "114212", "124112", "124211", "411212", "421112",
+      "421211", "212141", "214121", "412121", "111143", "111341", "131141", "114113",
+      "114311", "411113", "411311", "113141", "114131", "311141", "411131", "211412",
+      "211214", "211232", "2331112",
+    )
   }
 }

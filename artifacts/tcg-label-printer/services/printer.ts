@@ -233,7 +233,15 @@ export async function sendToPrinter(
   }
 
   await connectD11WithSetupRetry(targetAddress);
+  const fields = getLabelFields(label);
   // Keep the D11 session alive while it finishes the physical feed. Forget /
   // disconnect remains the explicit way to release the selected printer.
-  return printer.printLabelAsync({ lines: getPrintableLines(label) });
+  return printer.printLabelAsync({
+    lines: getPrintableLines(label).filter(
+      (line) => !line.startsWith('ID: ') && line !== 'figureheadz.com',
+    ),
+    barcode: label.cardId ?? label.cardName,
+    showBarcode: fields.includes('barcode'),
+    showLogo: fields.includes('website'),
+  });
 }

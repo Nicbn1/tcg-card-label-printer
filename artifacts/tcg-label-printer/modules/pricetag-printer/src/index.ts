@@ -18,6 +18,9 @@ export type NativePrinterConnection = {
 
 export type NativePrinterLabel = {
   lines: string[];
+  barcode?: string;
+  showBarcode?: boolean;
+  showLogo?: boolean;
 };
 
 export type NativePrinterDelivery = {
