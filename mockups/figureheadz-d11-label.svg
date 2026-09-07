@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="360" viewBox="0 0 1200 360">
+  <rect width="1200" height="360" fill="#232323"/>
+  <rect x="30" y="36" width="1140" height="288" rx="24" fill="#fff"/>
+
+  <!-- Monochrome Figureheadz burst -->
+  <path d="M42 177 L81 147 L54 102 L117 111 L132 51 L174 105 L228 66
+           L222 138 L276 162 L228 195 L258 252 L195 240 L171 309
+           L135 246 L72 288 L84 219 Z" fill="#000"/>
+  <text x="72" y="192" fill="#fff" font-family="Arial Narrow,Arial,sans-serif"
+        font-size="30" font-style="italic" font-weight="900">FIGUREHEADZ</text>
+
+  <!-- Enlarged bold print text -->
+  <text x="294" y="123" fill="#000" font-family="monospace" font-size="84" font-weight="900">CHARIZARD</text>
+  <text x="294" y="210" fill="#000" font-family="monospace" font-size="72" font-weight="900">BASE SET  $325</text>
+  <text x="294" y="294" fill="#000" font-family="monospace" font-size="66" font-weight="900">NEAR MINT</text>
+
+  <!-- Code 128-style barcode zone -->
+  <g fill="#000">
+    <rect x="756" y="234" width="6" height="72"/><rect x="768" y="234" width="3" height="72"/>
+    <rect x="780" y="234" width="9" height="72"/><rect x="798" y="234" width="3" height="72"/>
+    <rect x="807" y="234" width="6" height="72"/><rect x="822" y="234" width="6" height="72"/>
+    <rect x="834" y="234" width="3" height="72"/><rect x="843" y="234" width="9" height="72"/>
+    <rect x="858" y="234" width="6" height="72"/><rect x="873" y="234" width="3" height="72"/>
+    <rect x="882" y="234" width="3" height="72"/><rect x="891" y="234" width="9" height="72"/>
+    <rect x="906" y="234" width="3" height="72"/><rect x="918" y="234" width="6" height="72"/>
+    <rect x="930" y="234" width="9" height="72"/><rect x="945" y="234" width="3" height="72"/>
+    <rect x="957" y="234" width="6" height="72"/><rect x="972" y="234" width="3" height="72"/>
+    <rect x="981" y="234" width="9" height="72"/><rect x="996" y="234" width="6" height="72"/>
+    <rect x="1008" y="234" width="3" height="72"/><rect x="1020" y="234" width="9" height="72"/>
+    <rect x="1035" y="234" width="3" height="72"/><rect x="1044" y="234" width="6" height="72"/>
+    <rect x="1059" y="234" width="9" height="72"/><rect x="1074" y="234" width="3" height="72"/>
+    <rect x="1086" y="234" width="6" height="72"/><rect x="1098" y="234" width="3" height="72"/>
+    <rect x="1110" y="234" width="9" height="72"/><rect x="1125" y="234" width="6" height="72"/>
+  </g>
+
+  <text x="30" y="350" fill="#bbb" font-family="Arial,sans-serif" font-size="16">
+    Enlarged 3× preview · physical label: approximately 50 mm × 12 mm · 400 × 96 thermal dots
+  </text>
+</svg>

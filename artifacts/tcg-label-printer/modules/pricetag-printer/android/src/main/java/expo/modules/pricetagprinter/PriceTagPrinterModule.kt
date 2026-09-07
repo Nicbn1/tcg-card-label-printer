@@ -462,7 +462,8 @@ class PriceTagPrinterModule : Module() {
       LABEL_LENGTH_DOTS
     }
     val textStart = LABEL_PADDING_X + logoWidth
-    val maxWidth = barcodeStart - textStart - LABEL_SECTION_GAP
+    val fullTextWidth = LABEL_LENGTH_DOTS - textStart - LABEL_PADDING_X
+    val bottomTextWidth = barcodeStart - textStart - LABEL_SECTION_GAP
     val boldTypeface = android.graphics.Typeface.create(
       android.graphics.Typeface.MONOSPACE,
       android.graphics.Typeface.BOLD
@@ -470,20 +471,19 @@ class PriceTagPrinterModule : Module() {
     if (showLogo) drawFigureheadzLogo(canvas, paint)
 
     val visibleLines = lines.take(MAX_TEXT_LINES)
-    val firstLineTextSize = 23f
-    val standardTextSize = 18f
-    var baseline = 23f
+    val textSizes = floatArrayOf(28f, 24f, 22f)
+    val baselines = floatArrayOf(29f, 58f, 86f)
     visibleLines.forEachIndexed { index, line ->
-      paint.textSize = if (index == 0) firstLineTextSize else standardTextSize
+      paint.textSize = textSizes[index]
       paint.typeface = boldTypeface
       paint.isFakeBoldText = true
+      val lineWidth = if (index < 2) fullTextWidth else bottomTextWidth
       canvas.drawText(
-        ellipsizeLine(line, paint, maxWidth),
+        ellipsizeLine(line, paint, lineWidth),
         textStart.toFloat(),
-        baseline,
+        baselines[index],
         paint
       )
-      baseline += if (index == 0) 25f else 21f
     }
     paint.isFakeBoldText = false
     if (barcodeWidths.isNotEmpty()) {
