@@ -3,17 +3,10 @@
   <rect x="30" y="36" width="1140" height="288" rx="24" fill="#fff"/>
 
   <!-- Reference-matched information hierarchy -->
-  <text x="45" y="111" fill="#000" font-family="Arial,sans-serif" font-size="84" font-weight="900">GARGANACL #147</text>
-  <text x="45" y="165" fill="#000" font-family="Arial,sans-serif" font-size="51" font-weight="800">Pokemon Mega Evolution</text>
-  <text x="45" y="204" fill="#000" font-family="Arial,sans-serif" font-size="39" font-weight="700">LOOSE</text>
-  <text x="45" y="273" fill="#000" font-family="Arial,sans-serif" font-size="87" font-weight="900">$1.99</text>
-
-  <!-- Monochrome Figureheadz burst in a right-side brand column -->
-  <path d="M927 141 L960 117 L945 81 L999 93 L1023 51 L1053 93 L1107 66
-           L1098 114 L1158 129 L1110 156 L1140 195 L1080 186 L1050 231
-           L1020 189 L963 216 L972 168 Z" fill="#000"/>
-  <text x="954" y="153" fill="#fff" font-family="Arial Narrow,Arial,sans-serif"
-        font-size="21" font-style="italic" font-weight="900">FIGUREHEADZ</text>
+  <text x="45" y="111" fill="#000" font-family="Arial,sans-serif" font-size="90" font-weight="900">GARGANACL #147</text>
+  <text x="45" y="165" fill="#000" font-family="Arial,sans-serif" font-size="57" font-weight="800">Pokemon Mega Evolution</text>
+  <text x="45" y="204" fill="#000" font-family="Arial,sans-serif" font-size="42" font-weight="700">LOOSE</text>
+  <text x="45" y="273" fill="#000" font-family="Arial,sans-serif" font-size="96" font-weight="900">$1.99</text>
 
   <!-- Code 128-style barcode zone -->
   <g fill="#000">

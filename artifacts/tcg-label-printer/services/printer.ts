@@ -248,6 +248,7 @@ export async function sendToPrinter(
     stale: label.stale ?? false,
     barcode: label.cardId ?? label.cardName,
     showBarcode: fields.includes('barcode'),
-    showLogo: fields.includes('website'),
+    showLogo: false,
+    showWebsite: fields.includes('website'),
   });
 }

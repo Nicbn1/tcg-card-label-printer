@@ -345,6 +345,7 @@ class PriceTagPrinterModule : Module() {
       val barcode = payload["barcode"] as? String
       val showBarcode = payload["showBarcode"] as? Boolean ?: false
       val showLogo = payload["showLogo"] as? Boolean ?: false
+      val showWebsite = payload["showWebsite"] as? Boolean ?: false
       val content = LabelContent(
         cardName = payload["cardName"] as? String ?: lines.first(),
         series = payload["series"] as? String ?: lines.getOrNull(1).orEmpty(),
@@ -355,6 +356,7 @@ class PriceTagPrinterModule : Module() {
         barcode = barcode,
         showBarcode = showBarcode,
         showLogo = showLogo,
+        showWebsite = showWebsite,
       )
       if (lines.isEmpty()) {
         throw IllegalArgumentException("D11_LABEL_EMPTY: This label has no printable fields.")
@@ -495,7 +497,7 @@ class PriceTagPrinterModule : Module() {
       android.graphics.Typeface.SANS_SERIF,
       android.graphics.Typeface.NORMAL,
     )
-    if (content.showLogo) {
+    if (content.showWebsite) {
       paint.textSize = 8f
       canvas.drawText("figureheadz.com", META_LEFT.toFloat(), 78f, paint)
       if (content.generatedAt.isNotBlank()) {
@@ -1205,6 +1207,7 @@ class PriceTagPrinterModule : Module() {
     val barcode: String?,
     val showBarcode: Boolean,
     val showLogo: Boolean,
+    val showWebsite: Boolean,
   )
 
   private data class D11Response(

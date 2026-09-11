@@ -27,6 +27,7 @@ export type NativePrinterLabel = {
   barcode?: string;
   showBarcode?: boolean;
   showLogo?: boolean;
+  showWebsite?: boolean;
 };
 
 export type NativePrinterDelivery = {
