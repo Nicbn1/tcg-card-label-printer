@@ -465,19 +465,19 @@ class PriceTagPrinterModule : Module() {
     val contentWidth = if (content.showLogo) CONTENT_WIDTH else FULL_CONTENT_WIDTH
     drawFittedText(
       canvas, paint, content.cardName.uppercase(), 5f, 1f,
-      contentWidth, 27, 30f, boldTypeface,
+      contentWidth, 23, 26f, boldTypeface,
     )
     drawFittedText(
-      canvas, paint, content.series, 5f, 28f,
-      contentWidth, 17, 19f, boldTypeface,
+      canvas, paint, content.series, 5f, 24f,
+      contentWidth, 14, 16f, boldTypeface,
     )
     drawFittedText(
-      canvas, paint, content.condition.uppercase(), 5f, 45f,
-      contentWidth, 12, 14f, boldTypeface,
+      canvas, paint, content.condition.uppercase(), 5f, 38f,
+      contentWidth, 10, 12f, boldTypeface,
     )
     drawFittedText(
-      canvas, paint, content.price, 5f, 56f,
-      if (content.showLogo) PRICE_WIDTH else FULL_CONTENT_WIDTH, 24, 34f, boldTypeface,
+      canvas, paint, content.price, 5f, 48f,
+      if (content.showLogo) PRICE_WIDTH else FULL_CONTENT_WIDTH, 32, 42f, boldTypeface,
     )
     paint.isFakeBoldText = false
     if (barcodeWidths.isNotEmpty()) {

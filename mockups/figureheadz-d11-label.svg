@@ -3,10 +3,10 @@
   <rect x="30" y="36" width="1140" height="288" rx="24" fill="#fff"/>
 
   <!-- Reference-matched information hierarchy -->
-  <text x="45" y="111" fill="#000" font-family="Arial,sans-serif" font-size="90" font-weight="900">GARGANACL #147</text>
-  <text x="45" y="165" fill="#000" font-family="Arial,sans-serif" font-size="57" font-weight="800">Pokemon Mega Evolution</text>
-  <text x="45" y="204" fill="#000" font-family="Arial,sans-serif" font-size="42" font-weight="700">LOOSE</text>
-  <text x="45" y="273" fill="#000" font-family="Arial,sans-serif" font-size="96" font-weight="900">$1.99</text>
+  <text x="45" y="99" fill="#000" font-family="Arial,sans-serif" font-size="75" font-weight="900">GARGANACL #147</text>
+  <text x="45" y="141" fill="#000" font-family="Arial,sans-serif" font-size="45" font-weight="800">Pokemon Mega Evolution</text>
+  <text x="45" y="171" fill="#000" font-family="Arial,sans-serif" font-size="33" font-weight="700">LOOSE</text>
+  <text x="45" y="270" fill="#000" font-family="Arial,sans-serif" font-size="108" font-weight="900">$1.99</text>
 
   <!-- Code 128-style barcode zone -->
   <g fill="#000">
