@@ -3,10 +3,10 @@
   <rect x="30" y="36" width="1140" height="288" rx="24" fill="#fff"/>
 
   <!-- Reference-matched information hierarchy -->
-  <text x="45" y="99" fill="#000" font-family="Arial,sans-serif" font-size="63" font-weight="900">GARGANACL #147</text>
-  <text x="45" y="147" fill="#000" font-family="Arial,sans-serif" font-size="39" font-weight="800">Pokemon Mega Evolution</text>
-  <text x="45" y="186" fill="#000" font-family="Arial,sans-serif" font-size="30" font-weight="700">LOOSE</text>
-  <text x="45" y="264" fill="#000" font-family="Arial,sans-serif" font-size="75" font-weight="900">$1.99</text>
+  <text x="45" y="111" fill="#000" font-family="Arial,sans-serif" font-size="84" font-weight="900">GARGANACL #147</text>
+  <text x="45" y="165" fill="#000" font-family="Arial,sans-serif" font-size="51" font-weight="800">Pokemon Mega Evolution</text>
+  <text x="45" y="204" fill="#000" font-family="Arial,sans-serif" font-size="39" font-weight="700">LOOSE</text>
+  <text x="45" y="273" fill="#000" font-family="Arial,sans-serif" font-size="87" font-weight="900">$1.99</text>
 
   <!-- Monochrome Figureheadz burst in a right-side brand column -->
   <path d="M927 141 L960 117 L945 81 L999 93 L1023 51 L1053 93 L1107 66

@@ -460,19 +460,27 @@ class PriceTagPrinterModule : Module() {
       android.graphics.Typeface.SANS_SERIF,
       android.graphics.Typeface.BOLD
     )
-    paint.typeface = boldTypeface
-    paint.isFakeBoldText = true
-    paint.textSize = 21f
-    canvas.drawText(ellipsizeLine(content.cardName.uppercase(), paint, CONTENT_WIDTH), 5f, 21f, paint)
-    paint.textSize = 13f
-    canvas.drawText(ellipsizeLine(content.series, paint, CONTENT_WIDTH), 5f, 37f, paint)
-    paint.textSize = 10f
-    canvas.drawText(ellipsizeLine(content.condition.uppercase(), paint, CONTENT_WIDTH), 5f, 50f, paint)
-    paint.textSize = 25f
-    canvas.drawText(ellipsizeLine(content.price, paint, PRICE_WIDTH), 5f, 76f, paint)
+    val contentWidth = if (content.showLogo) CONTENT_WIDTH else FULL_CONTENT_WIDTH
+    drawFittedText(
+      canvas, paint, content.cardName.uppercase(), 5f, 1f,
+      contentWidth, 27, 30f, boldTypeface,
+    )
+    drawFittedText(
+      canvas, paint, content.series, 5f, 28f,
+      contentWidth, 17, 19f, boldTypeface,
+    )
+    drawFittedText(
+      canvas, paint, content.condition.uppercase(), 5f, 45f,
+      contentWidth, 12, 14f, boldTypeface,
+    )
+    drawFittedText(
+      canvas, paint, content.price, 5f, 56f,
+      if (content.showLogo) PRICE_WIDTH else FULL_CONTENT_WIDTH, 24, 34f, boldTypeface,
+    )
     paint.isFakeBoldText = false
     if (barcodeWidths.isNotEmpty()) {
-      drawBarcode(canvas, paint, barcodeWidths, BARCODE_LEFT)
+      val moduleScale = (BARCODE_MAX_WIDTH / barcodeWidths.sum()).coerceIn(1, 2)
+      drawBarcode(canvas, paint, barcodeWidths, BARCODE_LEFT, moduleScale)
       paint.typeface = android.graphics.Typeface.create(
         android.graphics.Typeface.MONOSPACE,
         android.graphics.Typeface.NORMAL,
@@ -522,6 +530,36 @@ class PriceTagPrinterModule : Module() {
     return transportBitmap
   }
 
+  private fun drawFittedText(
+    canvas: Canvas,
+    paint: Paint,
+    text: String,
+    left: Float,
+    top: Float,
+    width: Int,
+    height: Int,
+    maximumSize: Float,
+    typeface: android.graphics.Typeface,
+  ) {
+    if (text.isBlank() || width <= 0 || height <= 0) return
+    paint.typeface = typeface
+    paint.isFakeBoldText = true
+    var low = MIN_FITTED_TEXT_SIZE
+    var high = maximumSize
+    repeat(FONT_FIT_ITERATIONS) {
+      val candidate = (low + high) / 2f
+      paint.textSize = candidate
+      val metrics = paint.fontMetrics
+      val fitsWidth = paint.measureText(text) <= width
+      val fitsHeight = metrics.descent - metrics.ascent <= height
+      if (fitsWidth && fitsHeight) low = candidate else high = candidate
+    }
+    paint.textSize = low
+    val metrics = paint.fontMetrics
+    val baseline = top + ((height - (metrics.descent - metrics.ascent)) / 2f) - metrics.ascent
+    canvas.drawText(text, left, baseline, paint)
+  }
+
   private fun drawFigureheadzLogo(canvas: Canvas, paint: Paint) {
     val burst = Path().apply {
       moveTo(309f, 35f)
@@ -557,22 +595,29 @@ class PriceTagPrinterModule : Module() {
     paint.color = Color.BLACK
   }
 
-  private fun drawBarcode(canvas: Canvas, paint: Paint, widths: List<Int>, startX: Int) {
+  private fun drawBarcode(
+    canvas: Canvas,
+    paint: Paint,
+    widths: List<Int>,
+    startX: Int,
+    moduleScale: Int,
+  ) {
     var x = startX
     var isBar = true
     paint.style = Paint.Style.FILL
     paint.color = Color.BLACK
     widths.forEach { width ->
+      val scaledWidth = width * moduleScale
       if (isBar) {
         canvas.drawRect(
           x.toFloat(),
           80f,
-          (x + width).toFloat(),
+          (x + scaledWidth).toFloat(),
           90f,
           paint,
         )
       }
-      x += width
+      x += scaledWidth
       isBar = !isBar
     }
   }
@@ -1206,9 +1251,13 @@ class PriceTagPrinterModule : Module() {
     private const val LABEL_PADDING_Y = 6
     private const val MAX_BARCODE_CHARS = 10
     private const val CONTENT_WIDTH = 292
+    private const val FULL_CONTENT_WIDTH = 390
     private const val PRICE_WIDTH = 245
     private const val BARCODE_LEFT = 5
+    private const val BARCODE_MAX_WIDTH = 250
     private const val META_LEFT = 264
+    private const val MIN_FITTED_TEXT_SIZE = 7f
+    private const val FONT_FIT_ITERATIONS = 10
     private val CODE128_SYMBOLS = listOf(
       "212222", "222122", "222221", "121223", "121322", "131222", "122213", "122312",
       "132212", "221213", "221312", "231212", "112232", "122132", "122231", "113222",
